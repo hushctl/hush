@@ -6,26 +6,42 @@ A browser-based command center for Claude Code. Run Claude Code sessions on one 
 
 ## Install
 
-Download the latest release for your platform from [GitHub Releases](../../releases/latest):
+Releases are stored in [GitHub Releases](../../releases). The repo is private — use the `gh` CLI to download (run `gh auth login` once per machine).
 
-| Platform | Archive |
-|---|---|
-| macOS (Apple Silicon) | `hush-macos-arm64.tar.gz` |
-| macOS (Intel) | `hush-macos-x86_64.tar.gz` |
-| Linux (x86_64) | `hush-linux-x86_64.tar.gz` |
-| Linux (ARM64) | `hush-linux-arm64.tar.gz` |
+**macOS (Apple Silicon)**
+```sh
+gh release download --repo kushalhalder/hush --pattern "hush-macos-arm64.tar.gz" --clobber \
+  && tar -xzf hush-macos-arm64.tar.gz \
+  && sudo cp hush-*/hush hush-*/hush-hook /usr/local/bin/
+```
+
+**macOS (Intel)**
+```sh
+gh release download --repo kushalhalder/hush --pattern "hush-macos-x86_64.tar.gz" --clobber \
+  && tar -xzf hush-macos-x86_64.tar.gz \
+  && sudo cp hush-*/hush hush-*/hush-hook /usr/local/bin/
+```
+
+**Linux (x86_64)**
+```sh
+gh release download --repo kushalhalder/hush --pattern "hush-linux-x86_64.tar.gz" --clobber \
+  && tar -xzf hush-linux-x86_64.tar.gz \
+  && sudo cp hush-*/hush hush-*/hush-hook /usr/local/bin/
+```
+
+**Linux (ARM64)**
+```sh
+gh release download --repo kushalhalder/hush --pattern "hush-linux-arm64.tar.gz" --clobber \
+  && tar -xzf hush-linux-arm64.tar.gz \
+  && sudo cp hush-*/hush hush-*/hush-hook /usr/local/bin/
+```
+
+To download a specific version, add `--tag v0.1.0`. Without `--tag`, the latest release is used.
 
 Each archive contains:
 - `hush` — the daemon
 - `hush-hook` — the Claude Code hook shim (must live next to `hush`)
 - `ui/` — the built browser UI
-- `README.md`
-
-```sh
-tar -xzf hush-macos-arm64.tar.gz
-cd hush-v*
-./hush
-```
 
 Open `ui/index.html` in a browser, or serve the `ui/` directory from any static file server.
 
