@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
 
 permissions:
   contents: write
@@ -65,7 +70,7 @@ jobs:
         shell: bash
         run: |
           TARGET_DIR="daemon/target/${{ matrix.target }}/release"
-          STAGING="hush-${{ github.ref_name }}"
+          STAGING="hush-${{ github.event.inputs.tag || github.ref_name }}"
           mkdir -p "$STAGING"
 
           cp "$TARGET_DIR/hush"      "$STAGING/hush"
@@ -100,6 +105,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: |
             hush-*.tar.gz
             checksums.txt
