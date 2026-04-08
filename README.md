@@ -38,12 +38,7 @@ gh release download --repo kushalhalder/hush --pattern "hush-linux-arm64.tar.gz"
 
 To download a specific version, add `--tag v0.1.0`. Without `--tag`, the latest release is used.
 
-Each archive contains:
-- `hush` — the daemon
-- `hush-hook` — the Claude Code hook shim (must live next to `hush`)
-- `ui/` — the built browser UI
-
-Open `ui/index.html` in a browser, or serve the `ui/` directory from any static file server.
+Each archive contains `hush`, `hush-hook`, and `README.md`.
 
 ---
 

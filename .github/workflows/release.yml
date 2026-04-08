@@ -61,12 +61,6 @@ jobs:
         working-directory: daemon
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Build UI
-        working-directory: ui
-        run: |
-          npm ci
-          npm run build
-
       - name: Package
         shell: bash
         run: |
@@ -74,15 +68,9 @@ jobs:
           STAGING="hush-${{ github.ref_name }}"
           mkdir -p "$STAGING"
 
-          # Daemon + hook binaries
-          cp "$TARGET_DIR/hush"       "$STAGING/hush"
-          cp "$TARGET_DIR/hush-hook"  "$STAGING/hush-hook"
-
-          # Built UI (browser connects directly to daemon; serve from anywhere)
-          cp -r ui/dist "$STAGING/ui"
-
-          # README
-          cp README.md "$STAGING/"
+          cp "$TARGET_DIR/hush"      "$STAGING/hush"
+          cp "$TARGET_DIR/hush-hook" "$STAGING/hush-hook"
+          cp README.md               "$STAGING/"
 
           tar -czf "${{ matrix.archive }}" "$STAGING"
 
