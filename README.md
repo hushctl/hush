@@ -10,28 +10,28 @@ Releases are stored in [GitHub Releases](../../releases). The repo is private â€
 
 **macOS (Apple Silicon)**
 ```sh
-gh release download --repo kushalhalder/hush --pattern "hush-macos-arm64.tar.gz" --clobber \
+gh release download --repo kushalhalder/hush --pattern "hush-macos-arm64.tar.gz" \
   && tar -xzf hush-macos-arm64.tar.gz \
   && sudo cp hush-*/hush hush-*/hush-hook /usr/local/bin/
 ```
 
 **macOS (Intel)**
 ```sh
-gh release download --repo kushalhalder/hush --pattern "hush-macos-x86_64.tar.gz" --clobber \
+gh release download --repo kushalhalder/hush --pattern "hush-macos-x86_64.tar.gz" \
   && tar -xzf hush-macos-x86_64.tar.gz \
   && sudo cp hush-*/hush hush-*/hush-hook /usr/local/bin/
 ```
 
 **Linux (x86_64)**
 ```sh
-gh release download --repo kushalhalder/hush --pattern "hush-linux-x86_64.tar.gz" --clobber \
+gh release download --repo kushalhalder/hush --pattern "hush-linux-x86_64.tar.gz" \
   && tar -xzf hush-linux-x86_64.tar.gz \
   && sudo cp hush-*/hush hush-*/hush-hook /usr/local/bin/
 ```
 
 **Linux (ARM64)**
 ```sh
-gh release download --repo kushalhalder/hush --pattern "hush-linux-arm64.tar.gz" --clobber \
+gh release download --repo kushalhalder/hush --pattern "hush-linux-arm64.tar.gz" \
   && tar -xzf hush-linux-arm64.tar.gz \
   && sudo cp hush-*/hush hush-*/hush-hook /usr/local/bin/
 ```
