@@ -1,0 +1,11 @@
+{
+  "name": "mission-control-tests",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "node run_tests.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.0.0"
+  }
+}

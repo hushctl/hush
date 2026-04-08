@@ -1,0 +1,162 @@
+//! Peer gossip — each daemon periodically dials all known peers, sends a
+//! `peer_hello`, receives a `peer_list`, and merges the results. New peers
+//! learned this way are persisted to state.json so the mesh is remembered
+//! across restarts. Stale peers (no contact in 24h) are pruned.
+//!
+//! The gossip loop also handles the initial `--join` seed: those URLs are
+//! already in `state.peers` by the time this task starts (inserted in main.rs),
+//! so the first tick dials them automatically.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::RwLock;
+use tokio::time::{interval, MissedTickBehavior};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{debug, info, warn};
+
+use crate::state::{DaemonState, PeerInfo};
+
+const GOSSIP_INTERVAL: Duration = Duration::from_secs(30);
+const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
+/// Prune peers not seen for 24 hours.
+const STALE_AFTER_SECS: u64 = 24 * 3600;
+
+pub fn spawn_gossip(state: Arc<RwLock<DaemonState>>, state_path: PathBuf) {
+    tokio::spawn(async move {
+        let mut ticker = interval(GOSSIP_INTERVAL);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            run_gossip_round(Arc::clone(&state), &state_path).await;
+        }
+    });
+    info!("spawned gossip task (interval={}s)", GOSSIP_INTERVAL.as_secs());
+}
+
+async fn run_gossip_round(state: Arc<RwLock<DaemonState>>, state_path: &PathBuf) {
+    // Snapshot peers + our own identity before releasing the lock.
+    let (machine_id, advertise_url, peers) = {
+        let s = state.read().await;
+        (s.machine_id.clone(), s.advertise_url.clone(), s.peers.clone())
+    };
+
+    if peers.is_empty() {
+        return;
+    }
+
+    debug!("gossip round: dialling {} peer(s)", peers.len());
+
+    let mut newly_learned: Vec<PeerInfo> = Vec::new();
+    let mut contacted: Vec<String> = Vec::new();
+
+    for peer in &peers {
+        if peer.url.is_empty() {
+            continue;
+        }
+        match dial_peer(&machine_id, &advertise_url, &peers, &peer.url).await {
+            Ok(received_peers) => {
+                contacted.push(peer.machine_id.clone());
+                for rp in received_peers {
+                    // Don't add ourselves, and skip blank URLs
+                    if rp.machine_id != machine_id && !rp.url.is_empty() {
+                        newly_learned.push(rp);
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("gossip dial failed for {} ({}): {e}", peer.machine_id, peer.url);
+            }
+        }
+    }
+
+    // Merge results + update last_seen + prune stale
+    {
+        let mut s = state.write().await;
+        for mid in &contacted {
+            s.touch_peer(mid);
+        }
+        s.merge_peers(newly_learned);
+        s.prune_stale(STALE_AFTER_SECS);
+        s.save(state_path);
+    }
+
+    if !contacted.is_empty() {
+        info!("gossip round complete: contacted [{}]", contacted.join(", "));
+    }
+}
+
+/// Open a temporary WebSocket to `url`, send `peer_hello`, read the `peer_list`
+/// response, close, and return the received peers.
+async fn dial_peer(
+    my_machine_id: &str,
+    my_url: &str,
+    my_peers: &[PeerInfo],
+    peer_url: &str,
+) -> Result<Vec<PeerInfo>, String> {
+    let hello = serde_json::json!({
+        "type": "peer_hello",
+        "machine_id": my_machine_id,
+        "url": my_url,
+        "peers": my_peers,
+    });
+
+    let connect_fut = connect_async(peer_url);
+    let (mut ws, _) = tokio::time::timeout(DIAL_TIMEOUT, connect_fut)
+        .await
+        .map_err(|_| "connect timeout".to_string())?
+        .map_err(|e| format!("ws connect error: {e}"))?;
+
+    // Send peer_hello
+    ws.send(Message::Text(hello.to_string().into()))
+        .await
+        .map_err(|e| format!("send error: {e}"))?;
+
+    // Read one response (peer_list)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let response_fut = ws.next();
+    let msg = tokio::time::timeout(DIAL_TIMEOUT, response_fut)
+        .await
+        .map_err(|_| "response timeout".to_string())?
+        .ok_or("stream ended")?
+        .map_err(|e| format!("recv error: {e}"))?;
+
+    let _ = ws.close(None).await;
+
+    let text = match msg {
+        Message::Text(t) => t.to_string(),
+        _ => return Err("unexpected non-text response".to_string()),
+    };
+
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("json parse: {e}"))?;
+
+    if value.get("type").and_then(|v| v.as_str()) != Some("peer_list") {
+        return Err(format!("expected peer_list, got: {text}"));
+    }
+
+    let peers: Vec<PeerInfo> = value
+        .get("peers")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    // Stamp last_seen = now on all received peers (they were presumably just alive)
+    let peers = peers
+        .into_iter()
+        .map(|mut p| {
+            if p.last_seen == 0 {
+                p.last_seen = now;
+            }
+            p
+        })
+        .collect();
+
+    Ok(peers)
+}
