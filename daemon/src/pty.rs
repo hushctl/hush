@@ -141,6 +141,103 @@ impl PtyManager {
         // and causes the child process to receive SIGHUP.
     }
 
+    /// Spawn a plain shell (bash/zsh/$SHELL) pty for a worktree.
+    /// The session is stored under key `shell:{worktree_id}`.
+    /// Output is broadcast as `ShellData`, scrollback as `ShellScrollback`.
+    pub async fn spawn_shell(
+        &self,
+        worktree_id: String,
+        working_dir: &Path,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        let shell_key = format!("shell:{worktree_id}");
+        {
+            let sessions = self.sessions.lock().await;
+            if sessions.contains_key(&shell_key) {
+                debug!("shell pty for {worktree_id} already exists, skipping spawn");
+                return Ok(());
+            }
+        }
+
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| format!("openpty failed: {e}"))?;
+
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let mut cmd = CommandBuilder::new(&shell);
+        cmd.cwd(working_dir);
+        for (key, value) in std::env::vars() {
+            cmd.env(key, value);
+        }
+
+        let _child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("spawn shell failed: {e}"))?;
+        drop(pair.slave);
+
+        let writer = pair.master.take_writer().map_err(|e| format!("take_writer failed: {e}"))?;
+        let reader = pair.master.try_clone_reader().map_err(|e| format!("clone_reader failed: {e}"))?;
+
+        let session = Arc::new(Mutex::new(PtySession {
+            writer,
+            master: pair.master,
+            scrollback: Vec::new(),
+        }));
+
+        {
+            let mut sessions = self.sessions.lock().await;
+            sessions.insert(shell_key.clone(), Arc::clone(&session));
+        }
+
+        let (byte_tx, mut byte_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let shell_key_thread = shell_key.clone();
+        std::thread::spawn(move || {
+            let mut reader = reader;
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => { debug!("shell pty reader EOF for {shell_key_thread}"); break; }
+                    Ok(n) => { if byte_tx.send(buf[..n].to_vec()).is_err() { break; } }
+                    Err(e) => { warn!("shell pty read error for {shell_key_thread}: {e}"); break; }
+                }
+            }
+        });
+
+        let session_for_task = Arc::clone(&session);
+        let tx = self.tx.clone();
+        let sessions_for_cleanup = Arc::clone(&self.sessions);
+        let mid = Arc::clone(&self.machine_id);
+        let wt_id = worktree_id.clone();
+        let sk = shell_key.clone();
+        tokio::spawn(async move {
+            while let Some(chunk) = byte_rx.recv().await {
+                {
+                    let mut s = session_for_task.lock().await;
+                    s.append_scrollback(&chunk);
+                }
+                let encoded = BASE64.encode(&chunk);
+                let _ = tx.send(crate::protocol::ServerMessage::ShellData {
+                    machine_id: (*mid).clone(),
+                    worktree_id: wt_id.clone(),
+                    data: encoded,
+                });
+            }
+            info!("shell pty stream ended for {sk}");
+            sessions_for_cleanup.lock().await.remove(&sk);
+            let _ = tx.send(crate::protocol::ServerMessage::ShellExit {
+                machine_id: (*mid).clone(),
+                worktree_id: wt_id,
+                code: None,
+            });
+        });
+
+        info!("spawned shell pty for worktree {worktree_id} ({cols}x{rows})");
+        Ok(())
+    }
+
     /// Spawn a fresh `claude` pty for the given worktree. If one already
     /// exists, this is a no-op (returns Ok). Uses `claude --continue` so that
     /// it picks up the prior session for that working directory if any.

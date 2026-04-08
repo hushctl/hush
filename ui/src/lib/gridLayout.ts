@@ -3,7 +3,7 @@ import { urgencyOrder, statusColor } from './status'
 import type { WorktreeInfo } from './protocol'
 
 const GRID_SPACING = 24
-const GRAVITY_RADIUS = 80
+const GRAVITY_RADIUS = 55
 const JITTER = 6  // px — deterministic per-site jitter to break hexagonal regularity
 
 export interface VoronoiCell {
@@ -75,7 +75,7 @@ export function generateVoronoiCells(
     cy /= poly.length
 
     // Gravity-well fill: blend toward the nearest worktree's status color
-    let fill = '#f3f4f6'
+    let fill = '#0a0a0a'
     let bestFactor = 0
     let bestColor = fill
     for (const wt of wtPositions) {
@@ -89,7 +89,7 @@ export function generateVoronoiCells(
       }
     }
     if (bestFactor > 0) {
-      fill = blendColor('#f3f4f6', bestColor, bestFactor)
+      fill = blendColor('#0a0a0a', bestColor, bestFactor)
     }
 
     cells.push({ polygon: poly as Array<[number, number]>, fill })
@@ -162,58 +162,73 @@ export function computeWorktreePositions(
     return recencyNorm(a[1][0].id) - recencyNorm(b[1][0].id)
   })
 
-  const positions: WorktreePosition[] = []
-
-  for (const [, wts] of sortedProjects) {
-    // Project anchor: urgency of the top worktree → X band
-    const topUrgency = urgencyOrder(wts[0].status)
-    const anchorXFrac = URGENCY_X[topUrgency]
-
-    // Y anchor from the top worktree's recency
-    const anchorYFrac = recencyNorm(wts[0].id)
-
-    // Give each project a small horizontal hash-based nudge so multiple projects
-    // in the same urgency band don't stack perfectly.
-    const projectHash = wts[0].project_id
-      .split('')
-      .reduce((acc, c) => acc + c.charCodeAt(0), 0)
-    const xNudge = ((projectHash * 31) % 60) - 30  // ±30px
-
-    const baseX = PADDING + anchorXFrac * usableW + xNudge
-    const baseY = PADDING + anchorYFrac * usableH
-
-    // Stack worktrees in the project vertically, centred around baseY
-    const totalHeight = (wts.length - 1) * CLUSTER_V_GAP
-    const startY = baseY - totalHeight / 2
-
-    for (let i = 0; i < wts.length; i++) {
-      const wt = wts[i]
-      const urgency = urgencyOrder(wt.status)
-
-      // Within a project, less-urgent worktrees shift slightly right
-      const xShift = (urgency - topUrgency) * 24
-
-      const x = Math.max(PADDING, Math.min(width - PADDING, baseX + xShift))
-      const y = Math.max(PADDING, Math.min(height - PADDING, startY + i * CLUSTER_V_GAP))
-
-      const dotSize = urgency === 0 ? 14 : urgency === 1 ? 11 : urgency === 2 ? 9 : 7
-
-      positions.push({
-        worktreeId: wt.id,
-        x,
-        y,
-        dotSize,
-        color: statusColor(wt.status),
-        lastActivity: lastActivities.get(wt.id) ?? now,
-      })
-    }
+  // Group projects by urgency band so we can distribute Y evenly within each band.
+  // This prevents all idle (or all running) projects from collapsing to the same Y
+  // when their recency scores are identical.
+  const byBand = new Map<number, typeof sortedProjects>()
+  for (const entry of sortedProjects) {
+    const band = urgencyOrder(entry[1][0].status)
+    const arr = byBand.get(band) ?? []
+    arr.push(entry)
+    byBand.set(band, arr)
   }
 
-  // Collision avoidance: push dots apart until no two are closer than MIN_SEP
-  const MIN_SEP = 30
-  for (let iter = 0; iter < 5; iter++) {
+  const positions: WorktreePosition[] = []
+  // Track which project each position belongs to (for cross-project collision avoidance)
+  const posProjectId: string[] = []
+
+  for (const [band, bandProjects] of byBand.entries()) {
+    const anchorXFrac = URGENCY_X[band]
+    const n = bandProjects.length
+
+    bandProjects.forEach(([, wts], bandIdx) => {
+      // Distribute projects evenly across Y within their band.
+      // Even one project gets placed at the midpoint of its slot.
+      const yFrac = (bandIdx + 0.5) / n
+      const baseY = PADDING + yFrac * usableH
+
+      // Hash-based X nudge — wider spread (±50px) to separate labels
+      const projectHash = wts[0].project_id
+        .split('')
+        .reduce((acc, c) => acc + c.charCodeAt(0), 0)
+      const xNudge = ((projectHash * 31) % 100) - 50  // ±50px
+
+      const baseX = PADDING + anchorXFrac * usableW + xNudge
+
+      // Stack worktrees in the project vertically, centred around baseY
+      const totalHeight = (wts.length - 1) * CLUSTER_V_GAP
+      const startY = baseY - totalHeight / 2
+
+      for (let i = 0; i < wts.length; i++) {
+        const wt = wts[i]
+        const urgency = urgencyOrder(wt.status)
+        const xShift = (urgency - band) * 24
+
+        const x = Math.max(PADDING, Math.min(width - PADDING, baseX + xShift))
+        const y = Math.max(PADDING, Math.min(height - PADDING, startY + i * CLUSTER_V_GAP))
+        const dotSize = urgency === 0 ? 14 : urgency === 1 ? 11 : urgency === 2 ? 9 : 7
+
+        positions.push({
+          worktreeId: wt.id,
+          x,
+          y,
+          dotSize,
+          color: statusColor(wt.status),
+          lastActivity: lastActivities.get(wt.id) ?? now,
+        })
+        posProjectId.push(wts[0].project_id)
+      }
+    })
+  }
+
+  // Cross-project collision avoidance: ensure dots from different projects stay
+  // at least MIN_SEP apart (accounts for label widths). Same-project dots are
+  // allowed to stay close (they are already stacked with CLUSTER_V_GAP).
+  const MIN_SEP = 110
+  for (let iter = 0; iter < 20; iter++) {
     for (let i = 0; i < positions.length; i++) {
       for (let j = i + 1; j < positions.length; j++) {
+        if (posProjectId[i] === posProjectId[j]) continue  // same project — keep tight
         const dx = positions[j].x - positions[i].x
         const dy = positions[j].y - positions[i].y
         const dist = Math.hypot(dx, dy)
@@ -221,10 +236,10 @@ export function computeWorktreePositions(
           const push = (MIN_SEP - dist) / 2 + 1
           const nx = dx / dist
           const ny = dy / dist
-          // Push primarily along Y to preserve urgency-X grouping
-          positions[i].x = Math.max(PADDING, Math.min(width - PADDING, positions[i].x - nx * push * 0.3))
+          // Push primarily along Y to preserve urgency-X column grouping
+          positions[i].x = Math.max(PADDING, Math.min(width - PADDING, positions[i].x - nx * push * 0.2))
           positions[i].y = Math.max(PADDING, Math.min(height - PADDING, positions[i].y - ny * push))
-          positions[j].x = Math.max(PADDING, Math.min(width - PADDING, positions[j].x + nx * push * 0.3))
+          positions[j].x = Math.max(PADDING, Math.min(width - PADDING, positions[j].x + nx * push * 0.2))
           positions[j].y = Math.max(PADDING, Math.min(height - PADDING, positions[j].y + ny * push))
         }
       }

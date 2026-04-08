@@ -40,7 +40,6 @@ export function CommandBar() {
   const openPane = useStore(s => s.openPane)
   const closePane = useStore(s => s.closePane)
   const switchToGrid = useStore(s => s.switchToGrid)
-  const setTileMode = useStore(s => s.setTileMode)
   const openProjectTree = useStore(s => s.openProjectTree)
   const addDaemon = useStore(s => s.addDaemon)
   const pendingCreate = useStore(s => s.pendingCreate)
@@ -80,8 +79,6 @@ export function CommandBar() {
 
       case 'pull_up': {
         if (intent.worktreeIds.length === 0) return { ok: false, error: 'no matching worktrees' }
-        if (intent.worktreeIds.length >= 2) setTileMode('2-up')
-        else setTileMode('1-up')
         for (const id of intent.worktreeIds) openPane(id)
         return { ok: true }
       }
@@ -95,7 +92,6 @@ export function CommandBar() {
       case 'show_needs_me': {
         const ids = Object.values(worktrees).filter(w => w.status === 'needs_you').map(w => w.id)
         if (ids.length === 0) return { ok: false, error: 'nothing needs you right now' }
-        if (ids.length >= 2) setTileMode('2-up')
         for (const id of ids) openPane(id)
         return { ok: true }
       }
@@ -163,9 +159,7 @@ export function CommandBar() {
   const placeholder =
     layoutMode === 'grid'
       ? 'workspace intent — "pull up kinobi", "show me what needs me"…'
-      : layoutMode === 'tree'
-        ? '"new worktree feat/x", "back to grid"…'
-        : '"close kinobi", "back to grid", "pull up rangoli"…'
+      : '"close kinobi", "back to grid", "pull up rangoli"…'
 
   const connectedCount = Object.values(daemons).filter(d => d.connected).length
 

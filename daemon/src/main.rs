@@ -1,3 +1,4 @@
+mod git_watcher;
 mod gossip;
 mod hooks;
 mod protocol;
@@ -17,6 +18,7 @@ use clap::Parser;
 use tokio::sync::{broadcast, RwLock};
 use tracing::info;
 
+use crate::git_watcher::GitWatcher;
 use crate::protocol::ServerMessage;
 use crate::pty::PtyManager;
 use crate::state::{DaemonState, PeerInfo};
@@ -59,6 +61,7 @@ struct AppState {
     state_path: PathBuf,
     tx: broadcast::Sender<ServerMessage>,
     pty_manager: PtyManager,
+    git_watcher: GitWatcher,
 }
 
 #[tokio::main]
@@ -140,7 +143,8 @@ async fn main() {
         .and_then(|p| p.parent().map(|d| d.join("hush-hook")))
         .unwrap_or_else(|| PathBuf::from("hush-hook"));
 
-    let pty_manager = PtyManager::new(tx.clone(), machine_id, hook_socket.clone(), hush_hook_path);
+    let pty_manager = PtyManager::new(tx.clone(), machine_id.clone(), hook_socket.clone(), hush_hook_path);
+    let git_watcher = GitWatcher::new(tx.clone(), machine_id);
 
     hooks::spawn_listener(
         hook_socket,
@@ -157,6 +161,7 @@ async fn main() {
         state_path,
         tx,
         pty_manager,
+        git_watcher,
     };
 
     let app = Router::new()
@@ -191,6 +196,7 @@ async fn ws_handler(
             app_state.state_path,
             app_state.tx,
             app_state.pty_manager,
+            app_state.git_watcher,
         )
     })
 }

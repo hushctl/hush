@@ -9,9 +9,15 @@ export function TopBar() {
   const projects = useStore(s => s.projects)
   const activePanes = useStore(s => s.activePanes)
   const openPane = useStore(s => s.openPane)
+  const openPanel = useStore(s => s.openPanel)
+  const arrangePanels = useStore(s => s.arrangePanels)
+  const panels = useStore(s => s.canvas.panels)
   const switchToGrid = useStore(s => s.switchToGrid)
-  const tileMode = useStore(s => s.tileMode)
-  const setTileMode = useStore(s => s.setTileMode)
+
+  function handleTidy() {
+    // TopBar is h-10 (40px); canvas fills the rest
+    arrangePanels(window.innerWidth, window.innerHeight - 40)
+  }
   const daemons = useStore(s => s.daemons)
   const daemonList = Object.values(daemons)
   const connectedCount = daemonList.filter(d => d.connected).length
@@ -34,6 +40,20 @@ export function TopBar() {
 
       <div className="w-px h-4 bg-border" />
 
+      {panels.length > 0 && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="rounded-none shadow-none font-normal h-7 text-xs px-2"
+          onClick={handleTidy}
+          title="Arrange panels into a tidy grid"
+        >
+          tidy
+        </Button>
+      )}
+
+      <div className="w-px h-4 bg-border" />
+
       {/* All worktree dots */}
       <div className="flex items-center gap-3 overflow-x-auto flex-1">
         {Object.values(worktrees).map(wt => {
@@ -42,23 +62,32 @@ export function TopBar() {
           const color = statusColor(wt.status)
           return (
             <Tooltip key={wt.id}>
-              <TooltipTrigger
-                data-testid={`top-bar-wt-${wt.id}`}
-                className="flex items-center gap-1.5 shrink-0 hover:opacity-70 transition-opacity"
-                onClick={() => openPane(wt.id)}
-              >
-                <span
-                  className="inline-block w-2 h-2"
-                  style={{
-                    backgroundColor: color,
-                    outline: isActive ? `2px solid ${color}` : 'none',
-                    outlineOffset: 2,
-                  }}
-                />
-                <span className="text-xs font-mono text-muted-foreground">
-                  {project?.name ?? wt.project_id} / {wt.branch}
-                </span>
-              </TooltipTrigger>
+              <div className="flex items-center gap-1 shrink-0 group">
+                <TooltipTrigger
+                  data-testid={`top-bar-wt-${wt.id}`}
+                  className="flex items-center gap-1.5 hover:opacity-70 transition-opacity"
+                  onClick={() => openPane(wt.id)}
+                >
+                  <span
+                    className="inline-block w-2 h-2"
+                    style={{
+                      backgroundColor: color,
+                      outline: isActive ? `2px solid ${color}` : 'none',
+                      outlineOffset: 2,
+                    }}
+                  />
+                  <span className="text-xs font-mono text-muted-foreground">
+                    {project?.name ?? wt.project_id} / {wt.branch}
+                  </span>
+                </TooltipTrigger>
+                <button
+                  className="text-xs font-mono text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity px-0.5"
+                  title="Open shell"
+                  onClick={() => openPanel({ kind: 'shell', targetId: wt.id })}
+                >
+                  $
+                </button>
+              </div>
               <TooltipContent className="rounded-none text-xs font-mono">
                 {wt.status} · {wt.working_dir}
               </TooltipContent>
@@ -68,24 +97,6 @@ export function TopBar() {
       </div>
 
       <div className="flex items-center gap-1">
-        {/* Tile mode toggle */}
-        <button
-          data-testid="tile-1"
-          className={`px-2 py-1 text-xs font-mono border ${tileMode === '1-up' ? 'border-foreground' : 'border-border text-muted-foreground'} hover:border-foreground transition-colors`}
-          onClick={() => setTileMode('1-up')}
-          title="Single pane"
-        >
-          1
-        </button>
-        <button
-          data-testid="tile-2"
-          className={`px-2 py-1 text-xs font-mono border ${tileMode === '2-up' ? 'border-foreground' : 'border-border text-muted-foreground'} hover:border-foreground transition-colors`}
-          onClick={() => setTileMode('2-up')}
-          title="Two panes"
-        >
-          2
-        </button>
-
         {/* Connection status */}
         <Tooltip>
           <TooltipTrigger

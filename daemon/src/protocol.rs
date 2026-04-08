@@ -47,6 +47,41 @@ pub enum ClientMessage {
         path: String,
         name: String,
     },
+    /// One-shot git status snapshot for a worktree.
+    GitStatus {
+        worktree_id: String,
+    },
+    /// List all non-gitignored files in a worktree (for cmd+P).
+    ListFiles {
+        worktree_id: String,
+    },
+    /// Read a file from a worktree's working dir (relative path).
+    ReadFile {
+        worktree_id: String,
+        path: String,
+    },
+    /// Attach to a worktree's shell pty (plain bash/zsh, not claude).
+    /// Spawns the shell if not already running.
+    ShellAttach {
+        worktree_id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Forward keystrokes to a worktree's shell pty.
+    ShellInput {
+        worktree_id: String,
+        data: String,
+    },
+    /// Resize a worktree's shell pty.
+    ShellResize {
+        worktree_id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Kill a worktree's shell pty.
+    ShellKill {
+        worktree_id: String,
+    },
     ListProjects,
     ListWorktrees,
     /// Browser asks a daemon for its known peers.
@@ -119,6 +154,46 @@ pub enum ServerMessage {
     PeerList {
         machine_id: String,
         peers: Vec<PeerInfo>,
+    },
+    /// Live git status for a worktree (from poller or one-shot request).
+    GitStatus {
+        machine_id: String,
+        worktree_id: String,
+        staged: Vec<String>,
+        modified: Vec<String>,
+        untracked: Vec<String>,
+    },
+    /// All non-gitignored files in a worktree (response to ListFiles).
+    FileList {
+        machine_id: String,
+        worktree_id: String,
+        files: Vec<String>,
+    },
+    /// Contents of a file in a worktree (response to ReadFile).
+    FileContent {
+        machine_id: String,
+        worktree_id: String,
+        path: String,
+        content: String,
+        truncated: bool,
+    },
+    /// Base64-encoded output from a worktree's shell pty.
+    ShellData {
+        machine_id: String,
+        worktree_id: String,
+        data: String,
+    },
+    /// Scrollback replay sent in response to ShellAttach.
+    ShellScrollback {
+        machine_id: String,
+        worktree_id: String,
+        data: String,
+    },
+    /// Shell pty process has exited.
+    ShellExit {
+        machine_id: String,
+        worktree_id: String,
+        code: Option<i32>,
     },
 }
 

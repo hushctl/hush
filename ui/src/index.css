@@ -10,7 +10,7 @@
   --color-status-needs-you: #f59e0b;
   --color-status-failed: #ef4444;
   --color-status-idle: #9ca3af;
-  --color-dot-bg: #e5e7eb;
+  --color-dot-bg: #27272a;
   --font-mono: ui-monospace, 'SF Mono', Consolas, monospace;
 }
 
@@ -20,8 +20,8 @@
 
 body {
   margin: 0;
-  background: #ffffff;
-  color: #111827;
+  background: #0a0a0a;
+  color: #e5e5e5;
   font-family: system-ui, -apple-system, sans-serif;
   font-weight: 400;
   -webkit-font-smoothing: antialiased;

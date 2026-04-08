@@ -7,6 +7,9 @@ import { useStore } from './store'
 // creates canvas elements directly — StrictMode's double-invoke of effects causes
 // two terminal instances to write to the same container, producing ghost cursors
 // and doubled scrollback. All other React state bugs are caught by the e2e suite.
+// Force dark mode
+document.documentElement.classList.add('dark')
+
 createRoot(document.getElementById('root')!).render(<App />)
 
 // Expose store for Playwright e2e tests (dev only)

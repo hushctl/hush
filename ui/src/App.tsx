@@ -1,10 +1,12 @@
+import { useEffect } from 'react'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useDaemonConnections } from '@/hooks/useDaemonConnections'
 import { useStore } from '@/store'
+import { splitKey } from '@/store'
 import { DotGrid } from '@/components/DotGrid/DotGrid'
 import { TilingContainer } from '@/components/Layout/TilingContainer'
-import { ProjectTree } from '@/components/ProjectTree/ProjectTree'
 import { CommandBar } from '@/components/Layout/CommandBar'
+import { QuickOpen } from '@/components/FileViewer/QuickOpen'
 
 function DisconnectedScreen() {
   return (
@@ -30,6 +32,28 @@ function AppInner() {
   const daemons = useStore(s => s.daemons)
   const connected = Object.values(daemons).some(d => d.connected)
   const layoutMode = useStore(s => s.layoutMode)
+  const activePanes = useStore(s => s.activePanes)
+  const fileList = useStore(s => s.fileList)
+  const send = useStore(s => s.send)
+  const openCmdP = useStore(s => s.openCmdP)
+
+  // Global cmd+P handler: open quick-open targeting the last active pane
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.metaKey && e.key === 'p' && activePanes.length > 0) {
+        e.preventDefault()
+        const targetWorktree = activePanes[activePanes.length - 1]
+        // Fetch file list if not cached
+        if (!fileList[targetWorktree]) {
+          const [machineId, rawId] = splitKey(targetWorktree)
+          send(machineId, { type: 'list_files', worktree_id: rawId })
+        }
+        openCmdP(targetWorktree)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [activePanes, fileList, send, openCmdP])
 
   if (!connected) {
     return (
@@ -44,12 +68,23 @@ function AppInner() {
 
   return (
     <div className="flex flex-col w-full h-full">
-      <main className="flex-1 overflow-hidden">
-        {layoutMode === 'grid' && <DotGrid />}
-        {layoutMode === 'panes' && <TilingContainer />}
-        {layoutMode === 'tree' && <ProjectTree />}
+      <main className="flex-1 overflow-hidden relative">
+        {/* Grid — conditional render is fine, DotGrid has no xterm instances */}
+        {layoutMode === 'grid' && (
+          <div className="absolute inset-0">
+            <DotGrid />
+          </div>
+        )}
+        {/* Canvas — always mounted to preserve xterm scrollback across grid/canvas switches */}
+        <div
+          className="absolute inset-0"
+          style={{ display: layoutMode === 'canvas' ? 'block' : 'none' }}
+        >
+          <TilingContainer />
+        </div>
       </main>
       <CommandBar />
+      <QuickOpen />
     </div>
   )
 }

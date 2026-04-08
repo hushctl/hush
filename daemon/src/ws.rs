@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 
+use crate::git_watcher::{run_git_status, GitWatcher};
 use crate::protocol::{ClientMessage, ServerMessage};
 use crate::pty::PtyManager;
 use crate::state::{DaemonState, PeerInfo};
@@ -19,6 +20,7 @@ pub async fn handle_socket(
     state_path: PathBuf,
     tx: broadcast::Sender<ServerMessage>,
     pty_manager: PtyManager,
+    git_watcher: GitWatcher,
 ) {
     let mut rx = tx.subscribe();
     let (mut sink, mut stream) = socket.split();
@@ -77,6 +79,7 @@ pub async fn handle_socket(
             state_path.clone(),
             tx.clone(),
             pty_manager.clone(),
+            git_watcher.clone(),
         )
         .await;
     }
@@ -91,6 +94,7 @@ async fn handle_client_message(
     state_path: PathBuf,
     tx: broadcast::Sender<ServerMessage>,
     pty_manager: PtyManager,
+    git_watcher: GitWatcher,
 ) {
     match msg {
         ClientMessage::RegisterProject { path, name } => {
@@ -281,14 +285,18 @@ async fn handle_client_message(
                 let encoded = BASE64.encode(&scrollback);
                 let _ = tx.send(ServerMessage::PtyScrollback {
                     machine_id,
-                    worktree_id,
+                    worktree_id: worktree_id.clone(),
                     data: encoded,
                 });
             }
+
+            // Start git status polling for this worktree
+            git_watcher.start_watching(worktree_id, PathBuf::from(working_dir)).await;
         }
 
-        ClientMessage::PtyDetach { worktree_id: _ } => {
-            // No-op for v1 — pty keeps running, broadcast keeps flowing.
+        ClientMessage::PtyDetach { worktree_id } => {
+            // Stop git status polling when the pane detaches
+            git_watcher.stop_watching(&worktree_id).await;
         }
 
         ClientMessage::PtyInput { worktree_id, data } => {
@@ -319,6 +327,250 @@ async fn handle_client_message(
 
         ClientMessage::PtyKill { worktree_id } => {
             pty_manager.kill(&worktree_id).await;
+        }
+
+        ClientMessage::GitStatus { worktree_id } => {
+            let working_dir = {
+                let s = state.read().await;
+                s.find_worktree(&worktree_id)
+                    .map(|w| PathBuf::from(&w.working_dir))
+            };
+            let Some(working_dir) = working_dir else {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: format!("Worktree {worktree_id} not found"),
+                    worktree_id: Some(worktree_id),
+                });
+                return;
+            };
+            match run_git_status(&working_dir).await {
+                Ok((staged, modified, untracked)) => {
+                    let machine_id = state.read().await.machine_id.clone();
+                    let _ = tx.send(ServerMessage::GitStatus {
+                        machine_id,
+                        worktree_id,
+                        staged,
+                        modified,
+                        untracked,
+                    });
+                }
+                Err(e) => {
+                    let machine_id = state.read().await.machine_id.clone();
+                    let _ = tx.send(ServerMessage::Error {
+                        machine_id,
+                        message: format!("git status failed: {e}"),
+                        worktree_id: Some(worktree_id),
+                    });
+                }
+            }
+        }
+
+        ClientMessage::ListFiles { worktree_id } => {
+            let working_dir = {
+                let s = state.read().await;
+                s.find_worktree(&worktree_id)
+                    .map(|w| PathBuf::from(&w.working_dir))
+            };
+            let Some(working_dir) = working_dir else {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: format!("Worktree {worktree_id} not found"),
+                    worktree_id: Some(worktree_id),
+                });
+                return;
+            };
+            let output = tokio::process::Command::new("git")
+                .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+                .current_dir(&working_dir)
+                .output()
+                .await;
+            match output {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    let files: Vec<String> = stdout
+                        .lines()
+                        .filter(|l| !l.is_empty())
+                        .map(|l| l.to_string())
+                        .collect();
+                    let machine_id = state.read().await.machine_id.clone();
+                    let _ = tx.send(ServerMessage::FileList {
+                        machine_id,
+                        worktree_id,
+                        files,
+                    });
+                }
+                Ok(o) => {
+                    let machine_id = state.read().await.machine_id.clone();
+                    let _ = tx.send(ServerMessage::Error {
+                        machine_id,
+                        message: format!(
+                            "git ls-files failed: {}",
+                            String::from_utf8_lossy(&o.stderr)
+                        ),
+                        worktree_id: Some(worktree_id),
+                    });
+                }
+                Err(e) => {
+                    let machine_id = state.read().await.machine_id.clone();
+                    let _ = tx.send(ServerMessage::Error {
+                        machine_id,
+                        message: format!("git ls-files failed: {e}"),
+                        worktree_id: Some(worktree_id),
+                    });
+                }
+            }
+        }
+
+        ClientMessage::ReadFile { worktree_id, path } => {
+            let working_dir = {
+                let s = state.read().await;
+                s.find_worktree(&worktree_id)
+                    .map(|w| PathBuf::from(&w.working_dir))
+            };
+            let Some(working_dir) = working_dir else {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: format!("Worktree {worktree_id} not found"),
+                    worktree_id: Some(worktree_id),
+                });
+                return;
+            };
+
+            // Resolve and validate path — prevent directory traversal
+            let requested = working_dir.join(&path);
+            let (canonical_file, canonical_base) = match (
+                requested.canonicalize(),
+                working_dir.canonicalize(),
+            ) {
+                (Ok(f), Ok(b)) => (f, b),
+                _ => {
+                    let machine_id = state.read().await.machine_id.clone();
+                    let _ = tx.send(ServerMessage::Error {
+                        machine_id,
+                        message: format!("File not found: {path}"),
+                        worktree_id: Some(worktree_id),
+                    });
+                    return;
+                }
+            };
+            if !canonical_file.starts_with(&canonical_base) {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: "Access denied: path outside worktree".to_string(),
+                    worktree_id: Some(worktree_id),
+                });
+                return;
+            }
+
+            const MAX_BYTES: usize = 256 * 1024;
+            match tokio::fs::read(&canonical_file).await {
+                Ok(bytes) => {
+                    let truncated = bytes.len() > MAX_BYTES;
+                    let slice = if truncated { &bytes[..MAX_BYTES] } else { &bytes[..] };
+                    match String::from_utf8(slice.to_vec()) {
+                        Ok(content) => {
+                            let machine_id = state.read().await.machine_id.clone();
+                            let _ = tx.send(ServerMessage::FileContent {
+                                machine_id,
+                                worktree_id,
+                                path,
+                                content,
+                                truncated,
+                            });
+                        }
+                        Err(_) => {
+                            let machine_id = state.read().await.machine_id.clone();
+                            let _ = tx.send(ServerMessage::Error {
+                                machine_id,
+                                message: format!("File is not valid UTF-8: {path}"),
+                                worktree_id: Some(worktree_id),
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    let machine_id = state.read().await.machine_id.clone();
+                    let _ = tx.send(ServerMessage::Error {
+                        machine_id,
+                        message: format!("Failed to read file: {e}"),
+                        worktree_id: Some(worktree_id),
+                    });
+                }
+            }
+        }
+
+        ClientMessage::ShellAttach { worktree_id, cols, rows } => {
+            let working_dir = {
+                let s = state.read().await;
+                s.find_worktree(&worktree_id).map(|w| PathBuf::from(&w.working_dir))
+            };
+            let Some(working_dir) = working_dir else {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: format!("Worktree {worktree_id} not found"),
+                    worktree_id: Some(worktree_id),
+                });
+                return;
+            };
+
+            let shell_key = format!("shell:{worktree_id}");
+            if !pty_manager.exists(&shell_key).await {
+                if let Err(e) = pty_manager.spawn_shell(worktree_id.clone(), &working_dir, cols, rows).await {
+                    let machine_id = state.read().await.machine_id.clone();
+                    let _ = tx.send(ServerMessage::Error {
+                        machine_id,
+                        message: e,
+                        worktree_id: Some(worktree_id),
+                    });
+                    return;
+                }
+            } else {
+                let _ = pty_manager.resize(&shell_key, cols, rows).await;
+            }
+
+            if let Some(scrollback) = pty_manager.scrollback(&shell_key).await {
+                let machine_id = state.read().await.machine_id.clone();
+                let encoded = BASE64.encode(&scrollback);
+                let _ = tx.send(ServerMessage::ShellScrollback {
+                    machine_id,
+                    worktree_id,
+                    data: encoded,
+                });
+            }
+        }
+
+        ClientMessage::ShellInput { worktree_id, data } => {
+            let shell_key = format!("shell:{worktree_id}");
+            if let Err(e) = pty_manager.write(&shell_key, data.as_bytes()).await {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: e,
+                    worktree_id: Some(worktree_id),
+                });
+            }
+        }
+
+        ClientMessage::ShellResize { worktree_id, cols, rows } => {
+            let shell_key = format!("shell:{worktree_id}");
+            if let Err(e) = pty_manager.resize(&shell_key, cols, rows).await {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: e,
+                    worktree_id: Some(worktree_id),
+                });
+            }
+        }
+
+        ClientMessage::ShellKill { worktree_id } => {
+            let shell_key = format!("shell:{worktree_id}");
+            pty_manager.kill(&shell_key).await;
         }
 
         ClientMessage::ListProjects => {

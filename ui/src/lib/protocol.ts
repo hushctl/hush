@@ -43,6 +43,13 @@ export type ClientMessage =
   | { type: 'list_peers' }
   | { type: 'peer_hello'; machine_id: string; url: string; peers: PeerInfo[] }
   | { type: 'create_and_register_project'; path: string; name: string }
+  | { type: 'git_status'; worktree_id: string }
+  | { type: 'list_files'; worktree_id: string }
+  | { type: 'read_file'; worktree_id: string; path: string }
+  | { type: 'shell_attach'; worktree_id: string; cols: number; rows: number }
+  | { type: 'shell_input'; worktree_id: string; data: string }
+  | { type: 'shell_resize'; worktree_id: string; cols: number; rows: number }
+  | { type: 'shell_kill'; worktree_id: string }
 
 // ─── Daemon → Client ──────────────────────────────────────────────────────────
 
@@ -57,3 +64,9 @@ export type ServerMessage =
   | { type: 'error'; machine_id: string; message: string; worktree_id: string | null }
   | { type: 'peer_list'; machine_id: string; peers: PeerInfo[] }
   | { type: 'path_not_found'; machine_id: string; path: string; name: string }
+  | { type: 'git_status'; machine_id: string; worktree_id: string; staged: string[]; modified: string[]; untracked: string[] }
+  | { type: 'file_list'; machine_id: string; worktree_id: string; files: string[] }
+  | { type: 'file_content'; machine_id: string; worktree_id: string; path: string; content: string; truncated: boolean }
+  | { type: 'shell_data'; machine_id: string; worktree_id: string; data: string }
+  | { type: 'shell_scrollback'; machine_id: string; worktree_id: string; data: string }
+  | { type: 'shell_exit'; machine_id: string; worktree_id: string; code: number | null }
