@@ -1,9 +1,9 @@
-//! mc-hook — tiny shim invoked by Claude Code's hook system.
+//! hush-hook — tiny shim invoked by Claude Code's hook system.
 //!
-//! Reads the hook's JSON stdin, stamps it with MC_WORKTREE_ID and the event
-//! name (passed as argv[1]), writes one line of JSON to MC_HOOK_SOCKET, exits.
+//! Reads the hook's JSON stdin, stamps it with HUSH_WORKTREE_ID and the event
+//! name (passed as argv[1]), writes one line of JSON to HUSH_HOOK_SOCKET, exits.
 //!
-//! Env-var gated: if MC_WORKTREE_ID or MC_HOOK_SOCKET is missing, the shim is
+//! Env-var gated: if HUSH_WORKTREE_ID or HUSH_HOOK_SOCKET is missing, the shim is
 //! a no-op. This makes it safe even if a worktree's settings.local.json leaks
 //! outside daemon-managed sessions — non-daemon claude invocations just don't
 //! have the env vars and the shim does nothing.
@@ -20,11 +20,11 @@ fn main() -> ExitCode {
         None => return ExitCode::SUCCESS, // no event name → no-op
     };
 
-    let worktree_id = match env::var("MC_WORKTREE_ID") {
+    let worktree_id = match env::var("HUSH_WORKTREE_ID") {
         Ok(s) => s,
         Err(_) => return ExitCode::SUCCESS, // not running under daemon
     };
-    let socket_path = match env::var("MC_HOOK_SOCKET") {
+    let socket_path = match env::var("HUSH_HOOK_SOCKET") {
         Ok(s) => s,
         Err(_) => return ExitCode::SUCCESS,
     };

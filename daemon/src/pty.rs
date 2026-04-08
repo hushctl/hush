@@ -74,12 +74,12 @@ pub struct PtyManager {
     /// Stable machine identity for this daemon — stamped onto every broadcast.
     machine_id: Arc<String>,
     /// Absolute path to the daemon's hook Unix socket. Injected as
-    /// MC_HOOK_SOCKET env var into every spawned claude process so the
-    /// `mc-hook` shim knows where to write.
+    /// HUSH_HOOK_SOCKET env var into every spawned claude process so the
+    /// `hush-hook` shim knows where to write.
     hook_socket: PathBuf,
-    /// Absolute path to the `mc-hook` shim binary. Written into each
+    /// Absolute path to the `hush-hook` shim binary. Written into each
     /// worktree's settings.local.json so Claude Code can invoke it.
-    mc_hook_path: PathBuf,
+    hush_hook_path: PathBuf,
 }
 
 impl PtyManager {
@@ -87,14 +87,14 @@ impl PtyManager {
         tx: broadcast::Sender<ServerMessage>,
         machine_id: String,
         hook_socket: PathBuf,
-        mc_hook_path: PathBuf,
+        hush_hook_path: PathBuf,
     ) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             tx,
             machine_id: Arc::new(machine_id),
             hook_socket,
-            mc_hook_path,
+            hush_hook_path,
         }
     }
 
@@ -172,9 +172,9 @@ impl PtyManager {
             .map_err(|e| format!("openpty failed: {e}"))?;
 
         // Ensure .claude/settings.local.json in the worktree registers the
-        // mc-hook shim for the lifecycle events we care about. Idempotent —
+        // hush-hook shim for the lifecycle events we care about. Idempotent —
         // overwrites unconditionally with the canonical content.
-        if let Err(e) = write_hook_settings(working_dir, &self.mc_hook_path) {
+        if let Err(e) = write_hook_settings(working_dir, &self.hush_hook_path) {
             warn!("failed to write .claude/settings.local.json: {e}");
             // Non-fatal — pty still spawns, just no status events.
         }
@@ -190,10 +190,10 @@ impl PtyManager {
         for (key, value) in std::env::vars() {
             cmd.env(key, value);
         }
-        // Inject hook env vars — mc-hook reads these to know where to send
+        // Inject hook env vars — hush-hook reads these to know where to send
         // events and which worktree they belong to.
-        cmd.env("MC_WORKTREE_ID", &worktree_id);
-        cmd.env("MC_HOOK_SOCKET", self.hook_socket.to_string_lossy().to_string());
+        cmd.env("HUSH_WORKTREE_ID", &worktree_id);
+        cmd.env("HUSH_HOOK_SOCKET", self.hook_socket.to_string_lossy().to_string());
 
         let _child = pair
             .slave
@@ -284,18 +284,18 @@ impl PtyManager {
     }
 }
 
-/// Write `<working_dir>/.claude/settings.local.json` with the mc-hook
+/// Write `<working_dir>/.claude/settings.local.json` with the hush-hook
 /// registration for the lifecycle events we care about.
 ///
 /// This file is conventionally gitignored by Claude Code projects (see
-/// CLAUDE.md / Claude Code docs). The mc-hook shim is env-var-gated, so it's
+/// CLAUDE.md / Claude Code docs). The hush-hook shim is env-var-gated, so it's
 /// also safe if the file leaks elsewhere — non-daemon claude invocations
-/// just don't have MC_WORKTREE_ID set and the shim is a no-op.
-fn write_hook_settings(working_dir: &Path, mc_hook_path: &Path) -> std::io::Result<()> {
+/// just don't have HUSH_WORKTREE_ID set and the shim is a no-op.
+fn write_hook_settings(working_dir: &Path, hush_hook_path: &Path) -> std::io::Result<()> {
     let claude_dir = working_dir.join(".claude");
     std::fs::create_dir_all(&claude_dir)?;
     let settings_path = claude_dir.join("settings.local.json");
-    let hook_cmd = mc_hook_path.to_string_lossy();
+    let hook_cmd = hush_hook_path.to_string_lossy();
 
     // Build the JSON literally so we don't pull in serde for one helper.
     let body = format!(

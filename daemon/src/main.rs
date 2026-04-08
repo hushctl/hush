@@ -22,7 +22,7 @@ use crate::pty::PtyManager;
 use crate::state::{DaemonState, PeerInfo};
 
 #[derive(Parser)]
-#[command(name = "mcd", about = "Mission Control Daemon")]
+#[command(name = "hush", about = "Hush Daemon")]
 struct Args {
     /// Port to listen on
     #[arg(short, long, default_value_t = 9111)]
@@ -32,7 +32,7 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0")]
     bind: String,
 
-    /// Path to state file (default: ~/.mission-control/state.json)
+    /// Path to state file (default: ~/.hush/state.json)
     #[arg(long)]
     state_file: Option<PathBuf>,
 
@@ -74,12 +74,12 @@ async fn main() {
 
     let state_path = args.state_file.unwrap_or_else(|| {
         let home = dirs::home_dir().expect("Could not determine home directory");
-        home.join(".mission-control").join("state.json")
+        home.join(".hush").join("state.json")
     });
 
     // Ensure the directory exists
     if let Some(parent) = state_path.parent() {
-        std::fs::create_dir_all(parent).expect("Failed to create ~/.mission-control/");
+        std::fs::create_dir_all(parent).expect("Failed to create ~/.hush/");
     }
 
     let mut daemon_state = DaemonState::load(&state_path);
@@ -133,14 +133,14 @@ async fn main() {
     // Global broadcast channel — capacity 256 events
     let (tx, _rx) = broadcast::channel::<ServerMessage>(256);
 
-    // Hook listener Unix socket — mc-hook shim writes status events here
+    // Hook listener Unix socket — hush-hook shim writes status events here
     let hook_socket = hooks::default_socket_path();
-    let mc_hook_path = std::env::current_exe()
+    let hush_hook_path = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("mc-hook")))
-        .unwrap_or_else(|| PathBuf::from("mc-hook"));
+        .and_then(|p| p.parent().map(|d| d.join("hush-hook")))
+        .unwrap_or_else(|| PathBuf::from("hush-hook"));
 
-    let pty_manager = PtyManager::new(tx.clone(), machine_id, hook_socket.clone(), mc_hook_path);
+    let pty_manager = PtyManager::new(tx.clone(), machine_id, hook_socket.clone(), hush_hook_path);
 
     hooks::spawn_listener(
         hook_socket,
@@ -169,7 +169,7 @@ async fn main() {
         .await
         .expect("Failed to bind");
 
-    info!("Mission Control Daemon listening on ws://{addr}/ws");
+    info!("Hush Daemon listening on ws://{addr}/ws");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

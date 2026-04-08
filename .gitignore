@@ -32,9 +32,9 @@ Thumbs.db
 *.swo
 *~
 
-# ── Mission Control runtime state ───────────────────────────────────────────
+# ── Hush runtime state ───────────────────────────────────────────────────────
 # The daemon writes state + socket here at runtime
-.mission-control/
+.hush/
 
 # ── Claude Code local settings (per-worktree, daemon-managed) ───────────────
 .claude/settings.local.json

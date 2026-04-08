@@ -1,6 +1,6 @@
 //! Claude Code hooks listener.
 //!
-//! Listens on a Unix socket; the `mc-hook` shim binary connects per hook
+//! Listens on a Unix socket; the `hush-hook` shim binary connects per hook
 //! invocation and writes one JSON line. We parse the line, look up the
 //! worktree, transition its status, persist, and broadcast.
 
@@ -176,8 +176,8 @@ async fn handle_line(
     }
 }
 
-/// Standard socket location: ~/.mission-control/hooks.sock
+/// Standard socket location: ~/.hush/hooks.sock
 pub fn default_socket_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| Path::new("/tmp").to_path_buf());
-    home.join(".mission-control").join("hooks.sock")
+    home.join(".hush").join("hooks.sock")
 }
