@@ -29,6 +29,8 @@ export interface AppState {
 
   // Transient error message from daemon (cleared after display)
   daemonError: string | null
+  // Set when the daemon reports the project path doesn't exist — triggers the "create dir?" prompt
+  pendingCreate: { path: string; name: string; machineId: string } | null
 
   // ── WebSocket send function (per machine_id, injected by hook) ───────────
   /**
@@ -40,6 +42,7 @@ export interface AppState {
 
   // ── Actions ───────────────────────────────────────────────────────────────
   clearDaemonError: () => void
+  clearPendingCreate: () => void
   setDaemonConnected: (machineId: string, connected: boolean) => void
   addDaemon: (config: Omit<DaemonConfig, 'connected'>) => void
   removeDaemon: (machineId: string) => void
@@ -47,6 +50,8 @@ export interface AppState {
   setSend: (fn: (machineId: string, msg: ClientMessage) => void) => void
   /** Called on peer_list — auto-registers unknown peers as daemon entries */
   mergeDiscoveredPeers: (peers: PeerInfo[]) => void
+  /** Called when the real machine_id is learned — renames the temp URL-keyed entry */
+  resolveDaemonId: (tempId: string, realMachineId: string) => void
   handleServerMessage: (raw: string) => void
   selectWorktree: (id: string | null) => void
   openPane: (worktreeId: string) => void

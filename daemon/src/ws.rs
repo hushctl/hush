@@ -94,14 +94,58 @@ async fn handle_client_message(
 ) {
     match msg {
         ClientMessage::RegisterProject { path, name } => {
-            let path = PathBuf::from(&path);
+            let path_buf = PathBuf::from(&path);
+            if !path_buf.is_dir() {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::PathNotFound { machine_id, path, name });
+                return;
+            }
             let info = {
                 let mut s = state.write().await;
-                let info = s.register_project(path, name);
+                let info = s.register_project(path_buf, name);
                 s.save(&state_path);
                 info
             };
             info!("Registered project: {} ({})", info.name, info.id);
+            let (machine_id, projects) = {
+                let s = state.read().await;
+                (s.machine_id.clone(), s.project_list())
+            };
+            let _ = tx.send(ServerMessage::ProjectList { machine_id, projects });
+        }
+
+        ClientMessage::CreateAndRegisterProject { path, name } => {
+            let path_buf = PathBuf::from(&path);
+            if let Err(e) = std::fs::create_dir_all(&path_buf) {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: format!("Failed to create directory: {e}"),
+                    worktree_id: None,
+                });
+                return;
+            }
+            let git_out = tokio::process::Command::new("git")
+                .args(["init"])
+                .current_dir(&path_buf)
+                .output()
+                .await;
+            if let Err(e) = git_out {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: format!("Failed to run git init: {e}"),
+                    worktree_id: None,
+                });
+                return;
+            }
+            let info = {
+                let mut s = state.write().await;
+                let info = s.register_project(path_buf, name);
+                s.save(&state_path);
+                info
+            };
+            info!("Created and registered project: {} ({})", info.name, info.id);
             let (machine_id, projects) = {
                 let s = state.read().await;
                 (s.machine_id.clone(), s.project_list())

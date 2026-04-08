@@ -41,6 +41,7 @@ export const useStore = create<AppState>()(
       selectedProjectId: null,
       tileMode: '1-up',
       daemonError: null,
+      pendingCreate: null,
 
       // ── WebSocket send (injected by hook) ──────────────────────────────────
       send: (_machineId: string, _msg: ClientMessage) => {
@@ -49,6 +50,7 @@ export const useStore = create<AppState>()(
 
       // ── Actions ────────────────────────────────────────────────────────────
       clearDaemonError: () => set({ daemonError: null }),
+      clearPendingCreate: () => set({ pendingCreate: null }),
 
       setDaemonConnected: (machineId, connected) =>
         set(state => {
@@ -88,18 +90,37 @@ export const useStore = create<AppState>()(
       mergeDiscoveredPeers: (peers: PeerInfo[]) => {
         set(state => {
           const updated = { ...state.daemons }
+          const knownUrls = new Set(Object.values(updated).map(d => d.url))
           let changed = false
           for (const peer of peers) {
-            if (!peer.url || peer.machine_id in updated) continue
+            if (!peer.url) continue
+            if (peer.machine_id in updated) continue  // already known by machine_id
+            if (knownUrls.has(peer.url)) continue     // already known by URL (temp entry)
             updated[peer.machine_id] = {
               id: peer.machine_id,
               name: peer.machine_id,
               url: peer.url,
               connected: false,
             }
+            knownUrls.add(peer.url)
             changed = true
           }
           return changed ? { daemons: updated } : {}
+        })
+      },
+
+      resolveDaemonId: (tempId: string, realMachineId: string) => {
+        set(state => {
+          if (tempId === realMachineId) return {}
+          if (!(tempId in state.daemons)) return {}
+          const existing = state.daemons[tempId]
+          const updated = { ...state.daemons }
+          delete updated[tempId]
+          // If machine_id entry already exists (e.g. from gossip), just remove the temp entry
+          if (!(realMachineId in updated)) {
+            updated[realMachineId] = { ...existing, id: realMachineId }
+          }
+          return { daemons: updated }
         })
       },
 
@@ -207,6 +228,11 @@ export const useStore = create<AppState>()(
 
           case 'peer_list': {
             get().mergeDiscoveredPeers(msg.peers)
+            break
+          }
+
+          case 'path_not_found': {
+            set({ pendingCreate: { path: msg.path, name: msg.name, machineId: msg.machine_id } })
             break
           }
         }

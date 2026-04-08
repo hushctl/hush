@@ -27,6 +27,7 @@ export function CommandBar() {
   const [setupData, setSetupData] = useState({
     projectPath: '', projectName: '', branch: '',
     daemonUrl: 'ws://localhost:9111/ws', daemonName: '',
+    machineId: '',
   })
 
   const send = useStore(s => s.send)
@@ -42,6 +43,8 @@ export function CommandBar() {
   const setTileMode = useStore(s => s.setTileMode)
   const openProjectTree = useStore(s => s.openProjectTree)
   const addDaemon = useStore(s => s.addDaemon)
+  const pendingCreate = useStore(s => s.pendingCreate)
+  const clearPendingCreate = useStore(s => s.clearPendingCreate)
 
   /** ID of the daemon to use for workspace mutations.
    *  Prefers the first connected daemon; falls back to first registered. */
@@ -116,9 +119,9 @@ export function CommandBar() {
   }
 
   function handleRegisterProject() {
-    const { projectPath, projectName } = setupData
+    const { projectPath, projectName, machineId } = setupData
     if (!projectPath.trim()) return
-    send(targetMachineId(), {
+    send(machineId || targetMachineId(), {
       type: 'register_project',
       path: projectPath.trim(),
       name: (projectName.trim() || projectPath.split('/').pop()) ?? 'project',
@@ -130,15 +133,16 @@ export function CommandBar() {
     const { branch } = setupData
     const lastProject = Object.values(projects).at(-1)
     if (!lastProject || !branch.trim()) return
-    send(targetMachineId(), {
+    const [mid, rawProjId] = splitKey(lastProject.id)
+    send(mid || targetMachineId(), {
       type: 'create_worktree',
-      project_id: lastProject.id,
+      project_id: rawProjId || lastProject.id,
       branch: branch.trim(),
       permission_mode: 'plan',
     })
     setShowSetup(false)
     setSetupStep(null)
-    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'ws://localhost:9111/ws', daemonName: '' })
+    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'ws://localhost:9111/ws', daemonName: '', machineId: '' })
   }
 
   function handleAddDaemon() {
@@ -153,7 +157,7 @@ export function CommandBar() {
     })
     setShowSetup(false)
     setSetupStep(null)
-    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'ws://localhost:9111/ws', daemonName: '' })
+    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'ws://localhost:9111/ws', daemonName: '', machineId: '' })
   }
 
   const placeholder =
@@ -179,8 +183,12 @@ export function CommandBar() {
           onKeyDown={e => { if (e.key === 'Enter') handleSubmit() }}
         />
         {/* Connection status indicator */}
-        <span className="text-xs font-mono text-muted-foreground shrink-0">
-          {connectedCount}/{Object.keys(daemons).length}
+        <span className="text-xs font-mono text-muted-foreground shrink-0 flex items-center gap-1">
+          <span
+            className="inline-block w-1.5 h-1.5"
+            style={{ backgroundColor: connectedCount > 0 ? '#22c55e' : '#ef4444' }}
+          />
+          {connectedCount}/{Object.keys(daemons).length} {Object.keys(daemons).length === 1 ? 'daemon' : 'daemons'}
         </span>
         {value.trim() && (
           <Button
@@ -197,7 +205,12 @@ export function CommandBar() {
           variant="outline"
           size="sm"
           className="rounded-none shadow-none font-normal shrink-0"
-          onClick={() => { setShowSetup(v => !v); setSetupStep('project') }}
+          onClick={() => {
+            const firstConnected = Object.values(daemons).find(d => d.connected)
+            setSetupData(d => ({ ...d, machineId: firstConnected?.id ?? targetMachineId() }))
+            setShowSetup(v => !v)
+            setSetupStep('project')
+          }}
         >
           + project
         </Button>
@@ -225,10 +238,58 @@ export function CommandBar() {
         </div>
       )}
 
+      {pendingCreate && (
+        <div className="border-t border-border px-3 py-2 bg-muted flex items-center gap-3 text-xs font-mono">
+          <span className="text-muted-foreground shrink-0">
+            <span className="text-amber-500">directory not found:</span> {pendingCreate.path}
+          </span>
+          <span className="text-muted-foreground">— create it and run git init?</span>
+          <Button
+            size="sm"
+            className="rounded-none shadow-none font-normal shrink-0"
+            onClick={() => {
+              send(pendingCreate.machineId, {
+                type: 'create_and_register_project',
+                path: pendingCreate.path,
+                name: pendingCreate.name,
+              })
+              clearPendingCreate()
+              setShowSetup(false)
+              setSetupStep(null)
+            }}
+          >
+            Yes
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="rounded-none shadow-none font-normal shrink-0"
+            onClick={() => { clearPendingCreate(); setShowSetup(false); setSetupStep(null) }}
+          >
+            No
+          </Button>
+        </div>
+      )}
+
       {/* Project setup flow — onboarding only, not part of intent verbs */}
       {showSetup && (
         <div data-testid="setup-flow" className="border-t border-border px-3 py-2 bg-muted space-y-2">
           {setupStep === 'project' && (
+            <div className="space-y-2">
+            {Object.values(daemons).filter(d => d.connected).length >= 2 && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono text-muted-foreground shrink-0">daemon:</span>
+                {Object.values(daemons).filter(d => d.connected).map(d => (
+                  <button
+                    key={d.id}
+                    className={`px-2 py-1 text-xs font-mono border ${setupData.machineId === d.id ? 'border-foreground' : 'border-border text-muted-foreground'} hover:border-foreground transition-colors`}
+                    onClick={() => setSetupData(sd => ({ ...sd, machineId: d.id }))}
+                  >
+                    {d.name}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <span className="text-xs font-mono text-muted-foreground shrink-0">path:</span>
               <input
@@ -250,6 +311,7 @@ export function CommandBar() {
               <Button size="sm" className="rounded-none shadow-none font-normal" onClick={handleRegisterProject}>
                 Register
               </Button>
+            </div>
             </div>
           )}
           {setupStep === 'worktree' && (

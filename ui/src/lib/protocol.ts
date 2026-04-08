@@ -42,6 +42,7 @@ export type ClientMessage =
   | { type: 'list_worktrees' }
   | { type: 'list_peers' }
   | { type: 'peer_hello'; machine_id: string; url: string; peers: PeerInfo[] }
+  | { type: 'create_and_register_project'; path: string; name: string }
 
 // ─── Daemon → Client ──────────────────────────────────────────────────────────
 
@@ -55,3 +56,4 @@ export type ServerMessage =
   | { type: 'pty_exit'; machine_id: string; worktree_id: string; code: number | null }
   | { type: 'error'; machine_id: string; message: string; worktree_id: string | null }
   | { type: 'peer_list'; machine_id: string; peers: PeerInfo[] }
+  | { type: 'path_not_found'; machine_id: string; path: string; name: string }

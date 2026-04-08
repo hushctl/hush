@@ -13,7 +13,10 @@ export function TopBar() {
   const tileMode = useStore(s => s.tileMode)
   const setTileMode = useStore(s => s.setTileMode)
   const daemons = useStore(s => s.daemons)
-  const connected = Object.values(daemons).some(d => d.connected)
+  const daemonList = Object.values(daemons)
+  const connectedCount = daemonList.filter(d => d.connected).length
+  const totalCount = daemonList.length
+  const connected = connectedCount > 0
 
   return (
     <div data-testid="top-bar" className="flex items-center gap-2 px-3 h-10 border-b border-border bg-background shrink-0">
@@ -88,16 +91,24 @@ export function TopBar() {
           <TooltipTrigger
             data-testid="connection-status"
             data-connected={connected}
-            className="ml-2 inline-flex items-center"
+            className="ml-2 inline-flex items-center gap-1.5"
             style={{ background: 'none', border: 'none', padding: 0, cursor: 'default' }}
           >
             <span
               className="inline-block w-1.5 h-1.5"
               style={{ backgroundColor: connected ? '#22c55e' : '#ef4444' }}
             />
+            <span className="text-xs font-mono text-muted-foreground">
+              {connectedCount}/{totalCount}
+            </span>
           </TooltipTrigger>
           <TooltipContent className="rounded-none text-xs font-mono">
-            {connected ? 'connected' : 'disconnected — retrying…'}
+            {connectedCount}/{totalCount} {totalCount === 1 ? 'daemon' : 'daemons'} connected
+            {daemonList.map(d => (
+              <div key={d.id} className="mt-0.5">
+                <span style={{ color: d.connected ? '#22c55e' : '#ef4444' }}>■</span> {d.name}
+              </div>
+            ))}
           </TooltipContent>
         </Tooltip>
       </div>

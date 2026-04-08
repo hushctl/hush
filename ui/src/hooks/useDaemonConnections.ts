@@ -18,6 +18,7 @@ export function useDaemonConnections() {
   const daemons = useStore(s => s.daemons)
   const setSend = useStore(s => s.setSend)
   const setDaemonConnected = useStore(s => s.setDaemonConnected)
+  const resolveDaemonId = useStore(s => s.resolveDaemonId)
   const handleServerMessage = useStore(s => s.handleServerMessage)
 
   // Map from machineId → send fn, kept in a ref so the stable send closure
@@ -103,11 +104,10 @@ export function useDaemonConnections() {
                 if (realId !== daemonId) sendersRef.current.delete(daemonId)
               }
               entry.machineId = realId
+              // Rename the URL-keyed store entry to the real machine_id
+              resolveDaemonId(daemonId, realId)
               // Update connection status on real id
               setDaemonConnected(realId, true)
-              // NOTE: we don't remove the old daemon entry here —
-              // that's handled by store.mergeDiscoveredPeers / addDaemon
-              // on the next render if needed. The URL is the stable key.
             }
           } catch { /* ignored */ }
           handleServerMessage(e.data)
@@ -115,10 +115,10 @@ export function useDaemonConnections() {
 
         ws.onclose = () => {
           if (entry.unmounted) return
-          setDaemonConnected(daemonId, false)
+          setDaemonConnected(entry.machineId, false)
           const delay = entry.retry
           entry.retry = Math.min(delay * 2, 10_000)
-          setTimeout(() => connect(url, daemonId), delay)
+          setTimeout(() => connect(url, entry.machineId), delay)
         }
 
         ws.onerror = () => { ws.close() }

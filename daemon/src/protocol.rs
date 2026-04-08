@@ -42,6 +42,11 @@ pub enum ClientMessage {
     PtyKill {
         worktree_id: String,
     },
+    /// Confirm creation of a missing directory + git init, then register it.
+    CreateAndRegisterProject {
+        path: String,
+        name: String,
+    },
     ListProjects,
     ListWorktrees,
     /// Browser asks a daemon for its known peers.
@@ -102,6 +107,13 @@ pub enum ServerMessage {
         machine_id: String,
         message: String,
         worktree_id: Option<String>,
+    },
+    /// Sent when RegisterProject path does not exist on this machine.
+    /// Browser should ask the user if they want to create it.
+    PathNotFound {
+        machine_id: String,
+        path: String,
+        name: String,
     },
     /// Response to ListPeers / PeerHello — also used for daemon-to-daemon replies.
     PeerList {
