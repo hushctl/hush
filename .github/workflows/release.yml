@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v0.3.1)'
+        description: 'Release tag (e.g. v0.3.2)'
         required: true
 
 permissions:
@@ -21,18 +21,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macOS arm — native
           - target: aarch64-apple-darwin
             os: macos-latest
             asset_name: hush-darwin-aarch64.tar.gz
 
+          # macOS x86 — cross-compiled from arm runner (Apple toolchain supports both)
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
             asset_name: hush-darwin-x86_64.tar.gz
 
+          # Linux x86 — native
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             asset_name: hush-linux-x86_64.tar.gz
 
+          # Linux arm — cross-compiled via gcc-aarch64-linux-gnu
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             asset_name: hush-linux-aarch64.tar.gz
@@ -70,9 +74,7 @@ jobs:
         shell: bash
         run: |
           TARGET_DIR="daemon/target/${{ matrix.target }}/release"
-          # Flat tarball — hush and hush-hook at root, no subdirectory
-          tar -czf "${{ matrix.asset_name }}" \
-            -C "$TARGET_DIR" hush hush-hook
+          tar -czf "${{ matrix.asset_name }}" -C "$TARGET_DIR" hush hush-hook
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
