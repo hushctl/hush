@@ -501,10 +501,11 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'mc-ui-prefs',
-      // Migrate ws:// → wss:// in any persisted daemon URLs
-      migrate: (persisted: unknown) => {
+      version: 1,
+      // v1: migrate ws:// → wss:// in persisted daemon URLs
+      migrate: (persisted: unknown, fromVersion: number) => {
         const s = persisted as Record<string, unknown>
-        if (s?.daemons && typeof s.daemons === 'object') {
+        if (fromVersion < 1 && s?.daemons && typeof s.daemons === 'object') {
           const daemons = s.daemons as Record<string, { url?: string }>
           for (const d of Object.values(daemons)) {
             if (typeof d.url === 'string' && d.url.startsWith('ws://')) {
