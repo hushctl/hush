@@ -1,4 +1,5 @@
 import type { ProjectInfo, WorktreeInfo, ClientMessage, PeerInfo } from '@/lib/protocol'
+import type { ModelStatus } from '@/lib/gemma/bridge'
 
 export type PanelKind = 'terminal' | 'shell' | 'file_rail' | 'worktree_list'
 
@@ -73,6 +74,10 @@ export interface AppState {
   selectedDaemonId: string | null
   // Per-machine memory sample ring (cap 30) — fed by memory_pressure messages, used by sparkline
   memorySamples: Record<string, Array<{ t: number; ratio: number }>>
+  // Gemma 4 model status — not persisted
+  modelStatus: ModelStatus
+  modelProgress: number   // 0–100
+  modelProgressFile: string
 
   // ── File viewer state ─────────────────────────────────────────────────────
   /** Live git status per namespaced worktree id */
@@ -134,4 +139,10 @@ export interface AppState {
   openDaemonDetail: (machineId: string) => void
   /** Close the daemon detail panel */
   closeDaemonDetail: () => void
+  /** Update Gemma model load status */
+  setModelStatus: (status: ModelStatus) => void
+  /** Update Gemma model download progress */
+  setModelProgress: (progress: number, file: string) => void
 }
+
+export type { ModelStatus }

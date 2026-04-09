@@ -54,6 +54,9 @@ export const useStore = create<AppState>()(
       memoryAlerts: {},
       selectedDaemonId: null,
       memorySamples: {},
+      modelStatus: 'idle',
+      modelProgress: 0,
+      modelProgressFile: '',
 
       // ── File viewer state ──────────────────────────────────────────────────
       gitStatus: {},
@@ -549,6 +552,10 @@ export const useStore = create<AppState>()(
       openDaemonDetail: (machineId) => set({ selectedDaemonId: machineId }),
 
       closeDaemonDetail: () => set({ selectedDaemonId: null }),
+
+      setModelStatus: (status) => set({ modelStatus: status }),
+
+      setModelProgress: (progress, file) => set({ modelProgress: progress, modelProgressFile: file }),
     }),
     {
       name: 'mc-ui-prefs',

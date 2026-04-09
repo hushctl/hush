@@ -9,6 +9,7 @@ import { CommandBar } from '@/components/Layout/CommandBar'
 import { MemoryBanner } from '@/components/Layout/MemoryBanner'
 import { QuickOpen } from '@/components/FileViewer/QuickOpen'
 import { DaemonPanel } from '@/components/Daemon/DaemonPanel'
+import { startModelLoad } from '@/lib/gemma/bridge'
 
 function DisconnectedScreen() {
   return (
@@ -40,6 +41,20 @@ function AppInner() {
   const openCmdP = useStore(s => s.openCmdP)
   const selectedDaemonId = useStore(s => s.selectedDaemonId)
   const closeDaemonDetail = useStore(s => s.closeDaemonDetail)
+  const setModelStatus = useStore(s => s.setModelStatus)
+  const setModelProgress = useStore(s => s.setModelProgress)
+
+  // Kick off Gemma 4 model load on first mount — runs in a Web Worker, non-blocking
+  useEffect(() => {
+    startModelLoad(
+      (status, error) => {
+        setModelStatus(status)
+        if (error) console.warn('[gemma]', error)
+      },
+      (file, progress) => setModelProgress(progress, file),
+    )
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Global cmd+P handler: open quick-open targeting the last active pane
   useEffect(() => {

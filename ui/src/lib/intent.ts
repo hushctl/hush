@@ -12,6 +12,7 @@
 
 import type { ProjectInfo, WorktreeInfo } from './protocol'
 import type { DaemonConfig } from '@/store/types'
+import type { GemmaResult } from './gemma/bridge'
 
 export type IntentResult =
   | { kind: 'unknown'; reason: string }
@@ -181,6 +182,59 @@ function resolveWorktreeRef(ref: string, ctx: IntentContext): WorktreeInfo | nul
   const project = findProject(ref, ctx)
   if (!project) return null
   return Object.values(ctx.worktrees).find(w => w.project_id === project.id) ?? null
+}
+
+/**
+ * Map a GemmaResult (string target names) to a concrete IntentResult (namespaced IDs).
+ * Uses the same fuzzy-match helpers as parseIntent.
+ */
+export function resolveGemmaResult(r: GemmaResult, ctx: IntentContext): IntentResult {
+  switch (r.kind) {
+    case 'back_to_grid':  return { kind: 'back_to_grid' }
+    case 'show_needs_me': return { kind: 'show_needs_me' }
+    case 'unknown':       return { kind: 'unknown', reason: r.reason }
+
+    case 'pull_up': {
+      const wt = resolveWorktreeRef(r.target, ctx)
+      if (!wt) {
+        const proj = findProject(r.target, ctx)
+        if (proj) {
+          const wts = Object.values(ctx.worktrees).filter(w => w.project_id === proj.id)
+          if (wts.length > 0) return { kind: 'pull_up', worktreeIds: [wts[0].id] }
+        }
+        return { kind: 'unknown', reason: `no worktree matching "${r.target}"` }
+      }
+      return { kind: 'pull_up', worktreeIds: [wt.id] }
+    }
+
+    case 'close': {
+      const ids = resolveAllMatching(r.target, ctx)
+      if (ids.length === 0) return { kind: 'unknown', reason: `no worktree matching "${r.target}"` }
+      return { kind: 'close', worktreeIds: ids }
+    }
+
+    case 'tree': {
+      const proj = findProject(r.target, ctx)
+      if (!proj) return { kind: 'unknown', reason: `no project matching "${r.target}"` }
+      return { kind: 'tree', projectId: proj.id }
+    }
+
+    case 'new_worktree': {
+      const proj = r.project
+        ? findProject(r.project, ctx)
+        : Object.values(ctx.projects).at(-1) ?? null
+      if (!proj) return { kind: 'unknown', reason: 'no project to create worktree in' }
+      if (!r.branch) return { kind: 'unknown', reason: 'missing branch name' }
+      return { kind: 'new_worktree', projectId: proj.id, branch: r.branch }
+    }
+
+    case 'inspect_daemon': {
+      if (!ctx.daemons) return { kind: 'unknown', reason: 'no daemon context' }
+      const d = findDaemon(r.target, ctx.daemons)
+      if (!d) return { kind: 'unknown', reason: `no daemon matching "${r.target}"` }
+      return { kind: 'inspect_daemon', machineId: d.id }
+    }
+  }
 }
 
 /** Resolve a fuzzy reference into all matching worktree IDs (used by `close`). */

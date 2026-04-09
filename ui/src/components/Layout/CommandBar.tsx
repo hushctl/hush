@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useStore, splitKey } from '@/store'
 import { Button } from '@/components/ui/button'
-import { parseIntent, type IntentResult } from '@/lib/intent'
+import { parseIntent, resolveGemmaResult, type IntentResult } from '@/lib/intent'
+import { classify } from '@/lib/gemma/bridge'
 
 /**
  * Workspace-intent command bar.
@@ -45,6 +46,10 @@ export function CommandBar() {
   const pendingCreate = useStore(s => s.pendingCreate)
   const clearPendingCreate = useStore(s => s.clearPendingCreate)
   const openDaemonDetail = useStore(s => s.openDaemonDetail)
+  const modelStatus = useStore(s => s.modelStatus)
+  const modelProgress = useStore(s => s.modelProgress)
+  const modelProgressFile = useStore(s => s.modelProgressFile)
+  const [classifying, setClassifying] = useState(false)
 
   /** ID of the daemon to use for workspace mutations.
    *  Prefers the first connected daemon; falls back to first registered. */
@@ -54,11 +59,28 @@ export function CommandBar() {
     return Object.keys(daemons)[0] ?? 'localhost'
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     const text = value.trim()
-    if (!text) return
+    if (!text || classifying) return
 
-    const intent = parseIntent(text, { projects, worktrees, daemons })
+    const ctx = { projects, worktrees, daemons }
+    let intent = parseIntent(text, ctx)
+
+    // Regex parser didn't match — ask Gemma 4 to classify
+    if (intent.kind === 'unknown' && modelStatus === 'ready') {
+      setClassifying(true)
+      setHint(null)
+      try {
+        const projectNames = Object.values(projects).map(p => p.name)
+        const daemonNames = Object.values(daemons).map(d => d.name)
+        const gemmaResult = await classify(text, { projects: projectNames, daemons: daemonNames })
+        intent = resolveGemmaResult(gemmaResult, ctx)
+      } catch {
+        // Gemma failed — fall through with the original unknown intent
+      } finally {
+        setClassifying(false)
+      }
+    }
 
     const result = dispatchIntent(intent)
     if (result.ok) {
@@ -158,7 +180,7 @@ export function CommandBar() {
     })
     setShowSetup(false)
     setSetupStep(null)
-    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'wss://localhost:9111/ws', daemonName: '', machineId: '' })
+    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'wss://localhost:9111/ws', daemonName: '', machineId: '', permissionMode: 'plan' })
   }
 
   const placeholder =
@@ -223,6 +245,27 @@ export function CommandBar() {
           + daemon
         </Button>
       </div>
+
+      {/* Gemma model status — loading bar (first load only) or classifying spinner */}
+      {modelStatus === 'loading' && (
+        <div className="px-3 pb-2 space-y-1">
+          <div className="flex items-center justify-between text-xs font-mono text-muted-foreground">
+            <span>gemma 4 — loading model{modelProgressFile ? ` (${shortFile(modelProgressFile)})` : ''}…</span>
+            <span>{modelProgress}%</span>
+          </div>
+          <div className="h-px bg-border w-full overflow-hidden">
+            <div
+              className="h-full bg-foreground transition-all duration-300"
+              style={{ width: `${modelProgress}%` }}
+            />
+          </div>
+        </div>
+      )}
+      {classifying && (
+        <div className="px-3 pb-2 text-xs font-mono text-muted-foreground">
+          asking gemma…
+        </div>
+      )}
 
       {hint && (
         <div data-testid="command-hint" className="px-3 pb-2 text-xs font-mono text-amber-500">
@@ -374,4 +417,10 @@ export function CommandBar() {
       )}
     </div>
   )
+}
+
+function shortFile(file: string): string {
+  // e.g. "onnx/decoder_model_merged_q4.onnx" → "decoder_model_merged_q4.onnx"
+  const parts = file.split('/')
+  return parts[parts.length - 1]
 }
