@@ -1,42 +1,109 @@
 use std::io;
 use std::path::Path;
 
-use rcgen::{CertifiedKey, generate_simple_self_signed};
+use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyPair};
 use sha2::{Digest, Sha256};
 
 pub struct TlsMaterial {
     pub cert_pem: Vec<u8>,
     pub key_pem: Vec<u8>,
-    /// SHA-256 fingerprint of the DER cert, hex-encoded (colon-separated bytes).
+    /// SHA-256 fingerprint of the leaf cert DER, colon-separated hex bytes.
     pub fingerprint: String,
 }
 
-/// Load existing cert+key from `{hush_dir}/tls/`, or generate and persist them.
+/// A loaded or freshly generated CA — kept in memory to sign leaf certs.
+pub struct CaBundle {
+    pub cert: Certificate,
+    pub key_pair: KeyPair,
+    /// Path to ca.crt on disk (used by the `trust` subcommand).
+    pub cert_pem_path: std::path::PathBuf,
+}
+
+/// Load existing CA cert+key from `{hush_dir}/tls/ca.*`, or generate and
+/// persist a new one. The returned `CaBundle` can sign leaf certs via
+/// `CertificateParams::signed_by`.
+pub fn load_or_generate_ca(hush_dir: &Path) -> io::Result<CaBundle> {
+    let tls_dir = hush_dir.join("tls");
+    let ca_cert_path = tls_dir.join("ca.crt");
+    let ca_key_path = tls_dir.join("ca.key");
+
+    if ca_cert_path.exists() && ca_key_path.exists() {
+        let cert_pem = std::fs::read_to_string(&ca_cert_path)?;
+        let key_pem = std::fs::read_to_string(&ca_key_path)?;
+
+        let params = CertificateParams::from_ca_cert_pem(&cert_pem)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let key_pair = KeyPair::from_pem(&key_pem)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        // Reconstruct Certificate for signing — same DN, same SKI (PreSpecified from
+        // from_ca_cert_pem), same key ⟹ leaf AKI will match installed ca.crt's SKI.
+        let cert = params
+            .self_signed(&key_pair)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        return Ok(CaBundle { cert, key_pair, cert_pem_path: ca_cert_path });
+    }
+
+    generate_ca(tls_dir, ca_cert_path, ca_key_path)
+}
+
+fn generate_ca(
+    tls_dir: std::path::PathBuf,
+    ca_cert_path: std::path::PathBuf,
+    ca_key_path: std::path::PathBuf,
+) -> io::Result<CaBundle> {
+    std::fs::create_dir_all(&tls_dir)?;
+
+    let mut params = CertificateParams::default();
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "Hush Local CA");
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+
+    let key_pair = KeyPair::generate()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let cert = params
+        .self_signed(&key_pair)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    std::fs::write(&ca_cert_path, cert.pem())?;
+    std::fs::write(&ca_key_path, key_pair.serialize_pem())?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&ca_key_path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(&ca_cert_path, std::fs::Permissions::from_mode(0o644))?;
+    }
+
+    tracing::info!(
+        "Generated new local CA → {} (run `hush trust` to install in browser)",
+        ca_cert_path.display()
+    );
+
+    Ok(CaBundle { cert, key_pair, cert_pem_path: ca_cert_path })
+}
+
+/// Load or generate the daemon's leaf TLS cert, signed by the local CA.
 ///
-/// SANs include:
-/// - localhost, 127.0.0.1, ::1
-/// - `machine_name` (the daemon's human-readable name / hostname)
-/// - Every non-loopback IP address currently assigned to a network interface
-///
-/// If the cert exists but its SANs no longer cover all current IPs (e.g. a new
-/// Tailscale IP appeared), delete and regenerate so the new IP is covered.
+/// SANs: localhost, 127.0.0.1, ::1, `machine_name`, and every non-loopback
+/// interface IP. Regenerates if the cert is corrupt or misses any current IP.
 pub fn load_or_generate(hush_dir: &Path, machine_name: &str) -> io::Result<TlsMaterial> {
     let tls_dir = hush_dir.join("tls");
     let cert_path = tls_dir.join("cert.pem");
     let key_path = tls_dir.join("key.pem");
 
     let desired_sans = build_sans(machine_name);
+    let ca = load_or_generate_ca(hush_dir)?;
 
-    // Try loading existing cert; regenerate if corrupt or if SANs are stale
     if cert_path.exists() && key_path.exists() {
         match try_load(&cert_path, &key_path) {
             Ok(mat) => {
-                // Check whether the cert already covers all desired SANs
                 if sans_are_covered(&cert_path, &desired_sans) {
                     return Ok(mat);
                 }
                 tracing::info!(
-                    "TLS cert missing some SANs (new IPs?) — regenerating to cover: {}",
+                    "TLS cert missing some SANs (new IPs?) — regenerating: {}",
                     desired_sans.join(", ")
                 );
             }
@@ -46,7 +113,7 @@ pub fn load_or_generate(hush_dir: &Path, machine_name: &str) -> io::Result<TlsMa
         }
     }
 
-    generate_and_save(&tls_dir, &cert_path, &key_path, desired_sans)
+    generate_and_save(&tls_dir, &cert_path, &key_path, desired_sans, &ca)
 }
 
 fn build_sans(machine_name: &str) -> Vec<String> {
@@ -63,7 +130,6 @@ fn build_sans(machine_name: &str) -> Vec<String> {
         sans.push(machine_name.to_string());
     }
 
-    // Include all non-loopback interface IPs (LAN, Tailscale, etc.)
     if let Ok(ifaces) = if_addrs::get_if_addrs() {
         for iface in ifaces {
             if iface.is_loopback() {
@@ -80,15 +146,13 @@ fn build_sans(machine_name: &str) -> Vec<String> {
 }
 
 /// Returns true if the cert at `cert_path` already contains all `wanted` SANs.
-/// Uses a simple string scan of the PEM text — good enough for our purposes.
 fn sans_are_covered(cert_path: &Path, wanted: &[String]) -> bool {
-    let Ok(pem) = std::fs::read_to_string(cert_path) else { return false };
-    // Decode and check subject alternative names via DER
-    // Fall back to always-regenerate if we can't parse
-    let Ok(der) = pem_to_der(&pem) else { return false };
-    // rcgen doesn't expose SAN parsing; use a simple check: re-parse with
-    // rustls-pemfile and look for IP/DNS strings in the raw DER bytes.
-    // This is a best-effort check — false negatives cause a harmless regeneration.
+    let Ok(pem) = std::fs::read_to_string(cert_path) else {
+        return false;
+    };
+    let Ok(der) = pem_to_der(&pem) else {
+        return false;
+    };
     for san in wanted {
         let needle = san.as_bytes();
         if !der.windows(needle.len()).any(|w| w == needle) {
@@ -104,7 +168,8 @@ fn pem_to_der(pem: &str) -> io::Result<Vec<u8>> {
     let certs: Vec<_> = rustls_pemfile::certs(&mut cursor)
         .collect::<Result<_, _>>()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    certs.into_iter()
+    certs
+        .into_iter()
         .next()
         .map(|d| d.to_vec())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no cert in pem"))
@@ -115,16 +180,25 @@ fn generate_and_save(
     cert_path: &Path,
     key_path: &Path,
     sans: Vec<String>,
+    ca: &CaBundle,
 ) -> io::Result<TlsMaterial> {
     std::fs::create_dir_all(tls_dir)?;
 
-    tracing::info!("Generating self-signed TLS cert with SANs: {}", sans.join(", "));
+    tracing::info!(
+        "Generating TLS leaf cert (CA-signed) with SANs: {}",
+        sans.join(", ")
+    );
 
-    let CertifiedKey { cert, key_pair } = generate_simple_self_signed(sans)
+    let leaf_key = KeyPair::generate()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let leaf_params = CertificateParams::new(sans)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let leaf_cert = leaf_params
+        .signed_by(&leaf_key, &ca.cert, &ca.key_pair)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    let cert_pem = cert.pem().into_bytes();
-    let key_pem = key_pair.serialize_pem().into_bytes();
+    let cert_pem = leaf_cert.pem().into_bytes();
+    let key_pem = leaf_key.serialize_pem().into_bytes();
 
     std::fs::write(cert_path, &cert_pem)?;
     std::fs::write(key_path, &key_pem)?;
@@ -158,7 +232,7 @@ fn try_load(cert_path: &Path, key_path: &Path) -> io::Result<TlsMaterial> {
     Ok(TlsMaterial { cert_pem, key_pem, fingerprint })
 }
 
-fn fingerprint_pem(cert_pem: &[u8]) -> io::Result<String> {
+pub(crate) fn fingerprint_pem(cert_pem: &[u8]) -> io::Result<String> {
     let mut cursor = std::io::Cursor::new(cert_pem);
     let der = rustls_pemfile::certs(&mut cursor)
         .next()

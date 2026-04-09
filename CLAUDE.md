@@ -4,6 +4,8 @@
 
 Run `make hooks` once after cloning to install the pre-commit build check.
 
+Run `hush trust` once per machine to install the local CA into the OS trust store — this makes browsers automatically trust every daemon's TLS cert, with no per-connection manual exceptions. To distribute the CA to a second machine, see `hush trust export`.
+
 ## What this is
 
 A browser-based multi-project command center for Claude Code. Instead of switching between iTerm tabs, you manage all your active Claude Code sessions from a single spatial interface — accessible from any device.

@@ -5,6 +5,7 @@ mod protocol;
 mod pty;
 mod state;
 mod tls;
+mod trust;
 mod upgrade;
 mod ws;
 
@@ -30,6 +31,21 @@ use crate::state::{DaemonState, PeerInfo};
 enum SubCommand {
     /// Upgrade hush to the latest GitHub release
     Upgrade,
+    /// Manage the local CA used to issue trusted TLS certificates
+    Trust {
+        #[command(subcommand)]
+        action: Option<TrustAction>,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum TrustAction {
+    /// Install the Hush local CA into the OS trust store (default)
+    Install,
+    /// Print CA paths and an scp command for sharing to other machines
+    Export,
+    /// Remove the Hush local CA from the OS trust store
+    Uninstall,
 }
 
 #[derive(Parser)]
@@ -93,9 +109,37 @@ async fn main() {
 
     let args = Args::parse();
 
-    if let Some(SubCommand::Upgrade) = args.command {
-        upgrade::run().await;
-        return;
+    // Resolve hush_dir early — needed by trust subcommand before full state load.
+    let hush_dir = args
+        .state_file
+        .as_deref()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .expect("Could not determine home directory")
+                .join(".hush")
+        });
+
+    match &args.command {
+        Some(SubCommand::Upgrade) => {
+            upgrade::run().await;
+            return;
+        }
+        Some(SubCommand::Trust { action }) => {
+            let action = action.as_ref().unwrap_or(&TrustAction::Install);
+            let result = match action {
+                TrustAction::Install => trust::install(&hush_dir),
+                TrustAction::Export => { trust::export(&hush_dir); Ok(()) }
+                TrustAction::Uninstall => trust::uninstall(&hush_dir),
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        None => {}
     }
 
     let state_path = args.state_file.unwrap_or_else(|| {
