@@ -4,6 +4,7 @@ mod hooks;
 mod protocol;
 mod pty;
 mod state;
+mod tls;
 mod upgrade;
 mod ws;
 
@@ -15,6 +16,7 @@ use axum::extract::State as AxumState;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
+use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use tokio::sync::{broadcast, RwLock};
 use tracing::info;
@@ -138,6 +140,19 @@ async fn main() {
         });
     }
 
+    // Migrate ws:// → wss:// in persisted advertise_url and peer URLs
+    if daemon_state.advertise_url.starts_with("ws://") {
+        let new_url = daemon_state.advertise_url.replacen("ws://", "wss://", 1);
+        info!("Migrated advertise_url: ws:// → wss:// ({})", new_url);
+        daemon_state.advertise_url = new_url;
+    }
+    for peer in daemon_state.peers.iter_mut() {
+        if peer.url.starts_with("ws://") {
+            peer.url = peer.url.replacen("ws://", "wss://", 1);
+            info!("Migrated peer URL → wss:// ({})", peer.url);
+        }
+    }
+
     daemon_state.save(&state_path);
     info!(
         "Loaded state: {} projects, machine_id={}",
@@ -159,7 +174,7 @@ async fn main() {
         .unwrap_or_else(|| PathBuf::from("hush-hook"));
 
     let pty_manager = PtyManager::new(tx.clone(), machine_id.clone(), hook_socket.clone(), hush_hook_path);
-    let git_watcher = GitWatcher::new(tx.clone(), machine_id);
+    let git_watcher = GitWatcher::new(tx.clone(), machine_id.clone());
 
     hooks::spawn_listener(
         hook_socket,
@@ -173,7 +188,7 @@ async fn main() {
 
     let app_state = AppState {
         daemon_state,
-        state_path,
+        state_path: state_path.clone(),
         tx,
         pty_manager,
         git_watcher,
@@ -185,14 +200,31 @@ async fn main() {
         .with_state(app_state);
 
     let addr = format!("{}:{}", args.bind, args.port);
-    let listener = tokio::net::TcpListener::bind(&addr)
+
+    // Load or generate self-signed TLS cert
+    let hush_dir = state_path.parent().unwrap_or(std::path::Path::new("."));
+    let tls_material = tls::load_or_generate(hush_dir, &machine_id)
+        .expect("Failed to load/generate TLS certificate");
+
+    info!("Hush Daemon listening on wss://{addr}/ws");
+    info!("  Cert fingerprint (SHA-256): {}", tls_material.fingerprint);
+    info!("  Browser: visit https://{addr}/health once to trust the self-signed cert");
+
+    let rustls_config = RustlsConfig::from_pem(tls_material.cert_pem, tls_material.key_pem)
         .await
-        .expect("Failed to bind");
+        .expect("Failed to build TLS config");
 
-    info!("Hush Daemon listening on ws://{addr}/ws");
+    let handle = axum_server::Handle::new();
+    let shutdown_handle = handle.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        info!("Shutting down...");
+        shutdown_handle.graceful_shutdown(None);
+    });
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+    axum_server::bind_rustls(addr.parse().expect("Invalid bind address"), rustls_config)
+        .handle(handle)
+        .serve(app.into_make_service())
         .await
         .expect("Server error");
 
@@ -220,5 +252,4 @@ async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await
         .expect("Failed to install Ctrl+C handler");
-    info!("Shutting down...");
 }

@@ -37,7 +37,7 @@ export interface DaemonConfig {
   id: string
   /** Human-readable label shown in the UI */
   name: string
-  /** WebSocket URL, e.g. ws://localhost:9111/ws */
+  /** WebSocket URL, e.g. wss://localhost:9111/ws */
   url: string
   /** Live connection status */
   connected: boolean

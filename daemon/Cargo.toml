@@ -1,6 +1,6 @@
 [package]
 name = "hush"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 
 [[bin]]
@@ -20,10 +20,15 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "5"
-tokio-tungstenite = "0.21"
 futures-util = "0.3"
 portable-pty = "0.8"
 base64 = "0.22"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 flate2 = "1"
 tar = "0.4"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls-pemfile = "2"
+rcgen = "0.13"
+sha2 = "0.10"
+native-tls = "0.2"
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }

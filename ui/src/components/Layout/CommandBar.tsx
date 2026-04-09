@@ -26,7 +26,7 @@ export function CommandBar() {
   const [setupStep, setSetupStep] = useState<'project' | 'worktree' | 'daemon' | null>(null)
   const [setupData, setSetupData] = useState({
     projectPath: '', projectName: '', branch: '',
-    daemonUrl: 'ws://localhost:9111/ws', daemonName: '',
+    daemonUrl: 'wss://localhost:9111/ws', daemonName: '',
     machineId: '',
   })
 
@@ -138,7 +138,7 @@ export function CommandBar() {
     })
     setShowSetup(false)
     setSetupStep(null)
-    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'ws://localhost:9111/ws', daemonName: '', machineId: '' })
+    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'wss://localhost:9111/ws', daemonName: '', machineId: '' })
   }
 
   function handleAddDaemon() {
@@ -153,7 +153,7 @@ export function CommandBar() {
     })
     setShowSetup(false)
     setSetupStep(null)
-    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'ws://localhost:9111/ws', daemonName: '', machineId: '' })
+    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'wss://localhost:9111/ws', daemonName: '', machineId: '' })
   }
 
   const placeholder =
@@ -334,7 +334,7 @@ export function CommandBar() {
               <input
                 data-testid="setup-daemon-url-input"
                 className="flex-1 bg-background border border-border px-2 py-1 text-sm font-mono outline-none"
-                placeholder="ws://machine.ts.net:9111/ws"
+                placeholder="wss://machine.ts.net:9111/ws"
                 value={setupData.daemonUrl}
                 onChange={e => setSetupData(d => ({ ...d, daemonUrl: e.target.value }))}
                 onKeyDown={e => { if (e.key === 'Enter') handleAddDaemon() }}

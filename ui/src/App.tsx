@@ -16,7 +16,7 @@ function DisconnectedScreen() {
     >
       <div className="space-y-1">
         <p className="text-sm font-normal text-foreground">no daemon connected</p>
-        <p className="text-xs text-muted-foreground font-mono">connecting to ws://localhost:9111…</p>
+        <p className="text-xs text-muted-foreground font-mono">connecting to wss://localhost:9111…</p>
       </div>
       <div className="border border-border p-4 text-left space-y-2 max-w-sm w-full">
         <p className="text-xs font-mono text-muted-foreground uppercase tracking-wide">to start the daemon</p>

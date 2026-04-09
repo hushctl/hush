@@ -14,11 +14,24 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::RwLock;
 use tokio::time::{interval, MissedTickBehavior};
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, info, warn};
+use tokio_tungstenite::Connector;
+use tracing::{debug, info};
 
 use crate::state::{DaemonState, PeerInfo};
+
+/// Build a TLS connector that accepts any certificate from gossip peers.
+/// Network-layer trust (Tailscale, etc.) provides peer authenticity; TLS here
+/// only prevents cleartext interception. TOFU pinning is a future follow-up.
+fn make_tls_connector() -> Connector {
+    let tls = native_tls::TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_hostnames(true)
+        .build()
+        .expect("Failed to build native TLS connector");
+    Connector::NativeTls(tls.into())
+}
 
 const GOSSIP_INTERVAL: Duration = Duration::from_secs(30);
 const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -104,7 +117,8 @@ async fn dial_peer(
         "peers": my_peers,
     });
 
-    let connect_fut = connect_async(peer_url);
+    let connector = make_tls_connector();
+    let connect_fut = connect_async_tls_with_config(peer_url, None, false, Some(connector));
     let (mut ws, _) = tokio::time::timeout(DIAL_TIMEOUT, connect_fut)
         .await
         .map_err(|_| "connect timeout".to_string())?

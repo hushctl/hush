@@ -27,7 +27,7 @@ export function splitKey(key: string): [string, string] {
 const LOCALHOST_DAEMON: DaemonConfig = {
   id: 'localhost',
   name: 'localhost',
-  url: 'ws://localhost:9111/ws',
+  url: 'wss://localhost:9111/ws',
   connected: false,
 }
 
@@ -501,6 +501,19 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'mc-ui-prefs',
+      // Migrate ws:// → wss:// in any persisted daemon URLs
+      migrate: (persisted: unknown) => {
+        const s = persisted as Record<string, unknown>
+        if (s?.daemons && typeof s.daemons === 'object') {
+          const daemons = s.daemons as Record<string, { url?: string }>
+          for (const d of Object.values(daemons)) {
+            if (typeof d.url === 'string' && d.url.startsWith('ws://')) {
+              d.url = d.url.replace('ws://', 'wss://')
+            }
+          }
+        }
+        return s
+      },
       // Persist layout prefs + daemon registry; data comes from daemon on every connect
       partialize: (state) => ({
         layoutMode: state.layoutMode,
