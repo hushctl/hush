@@ -94,6 +94,12 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
+    // axum-server's TLS (rustls 0.23) requires an explicit crypto provider when
+    // multiple backends are in the dependency graph.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
