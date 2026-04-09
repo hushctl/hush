@@ -36,7 +36,7 @@ self.addEventListener('message', async (e: MessageEvent<InMsg>) => {
     try {
       generator = await pipeline(
         'text-generation',
-        'onnx-community/gemma-4-E2B-it-ONNX',
+        'onnx-community/Qwen2.5-0.5B-Instruct',
         {
           device: 'webgpu',
           dtype: 'q4',
@@ -69,7 +69,7 @@ self.addEventListener('message', async (e: MessageEvent<InMsg>) => {
       const messages = [{ role: 'user', content: buildPrompt(text, ctx) }]
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const output = await generator(messages as any, {
-        max_new_tokens: 60,
+        max_new_tokens: 20,
         do_sample: false,
       })
       // transformers.js returns the full conversation; last assistant turn is what we want

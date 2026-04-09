@@ -250,7 +250,7 @@ export function CommandBar() {
       {modelStatus === 'loading' && (
         <div className="px-3 pb-2 space-y-1">
           <div className="flex items-center justify-between text-xs font-mono text-muted-foreground">
-            <span>gemma 4 — loading model{modelProgressFile ? ` (${shortFile(modelProgressFile)})` : ''}…</span>
+            <span>loading intent model{modelProgressFile ? ` (${shortFile(modelProgressFile)})` : ''}…</span>
             <span>{modelProgress}%</span>
           </div>
           <div className="h-px bg-border w-full overflow-hidden">
