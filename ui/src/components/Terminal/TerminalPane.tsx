@@ -20,6 +20,10 @@ export function TerminalPane({ worktreeId }: Props) {
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const send = useStore(s => s.send)
+  // Keep a ref so closures inside the one-time effect always call the latest send
+  // without needing to re-mount the terminal when the function reference changes.
+  const sendRef = useRef(send)
+  sendRef.current = send
 
   // Split namespaced ID into machineId + rawId for daemon messages
   const [machineId, rawWorktreeId] = splitKey(worktreeId)
@@ -55,7 +59,7 @@ export function TerminalPane({ worktreeId }: Props) {
     // Claude Code's multi-line input distinguishes soft newlines via \n (0x0a).
     term.attachCustomKeyEventHandler(e => {
       if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey) {
-        send(machineId, { type: 'pty_input', worktree_id: rawWorktreeId, data: '\n' })
+        sendRef.current(machineId, { type: 'pty_input', worktree_id: rawWorktreeId, data: '\n' })
         return false // prevent xterm's default \r handling
       }
       return true
@@ -63,7 +67,7 @@ export function TerminalPane({ worktreeId }: Props) {
 
     // Forward keystrokes
     const dataDispose = term.onData(data => {
-      send(machineId, { type: 'pty_input', worktree_id: rawWorktreeId, data })
+      sendRef.current(machineId, { type: 'pty_input', worktree_id: rawWorktreeId, data })
     })
 
     // Subscribe to bytes from the daemon for this worktree
@@ -81,7 +85,7 @@ export function TerminalPane({ worktreeId }: Props) {
         try {
           fit.fit()
           if (termRef.current) {
-            send(machineId, {
+            sendRef.current(machineId, {
               type: 'pty_resize',
               worktree_id: rawWorktreeId,
               cols: termRef.current.cols,
@@ -99,7 +103,7 @@ export function TerminalPane({ worktreeId }: Props) {
       ro.disconnect()
       unsub()
       dataDispose.dispose()
-      send(machineId, { type: 'pty_detach', worktree_id: rawWorktreeId })
+      sendRef.current(machineId, { type: 'pty_detach', worktree_id: rawWorktreeId })
       term.dispose()
       termRef.current = null
       fitRef.current = null
