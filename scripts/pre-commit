@@ -41,12 +41,63 @@ done
 # Print any output
 [[ -f "$tmpdir/daemon.log" ]] && cat "$tmpdir/daemon.log"
 [[ -f "$tmpdir/ui.log" ]] && cat "$tmpdir/ui.log"
-rm -rf "$tmpdir"
 
 if [[ $fail -ne 0 ]]; then
+  rm -rf "$tmpdir"
   echo ""
   echo "✗ Pre-commit checks failed. Fix the errors above, or use --no-verify to skip."
   exit 1
 fi
+
+# Smoke-test the daemon binary: build it, start it on a throwaway port, confirm
+# it doesn't panic within 2 seconds. Catches runtime failures that cargo check
+# can't see (e.g. missing CryptoProvider::install_default()).
+if [[ $check_daemon -eq 1 ]]; then
+  echo "→ daemon smoke test..."
+  (cd "$REPO_ROOT/daemon" && cargo build 2>&1) > "$tmpdir/build.log"
+  if [[ $? -ne 0 ]]; then
+    cat "$tmpdir/build.log"
+    rm -rf "$tmpdir"
+    echo ""
+    echo "✗ Pre-commit checks failed. Fix the errors above, or use --no-verify to skip."
+    exit 1
+  fi
+
+  SMOKE_PORT=19111
+  SMOKE_STATE="$tmpdir/smoke-state.json"
+  SMOKE_LOG="$tmpdir/smoke.log"
+
+  "$REPO_ROOT/daemon/target/debug/hush" \
+    --port "$SMOKE_PORT" \
+    --state-file "$SMOKE_STATE" \
+    > "$SMOKE_LOG" 2>&1 &
+  SMOKE_PID=$!
+
+  sleep 2
+
+  # If the process already exited, it panicked or crashed.
+  if ! kill -0 "$SMOKE_PID" 2>/dev/null; then
+    cat "$SMOKE_LOG"
+    rm -rf "$tmpdir"
+    echo ""
+    echo "✗ Daemon crashed on startup — see output above."
+    exit 1
+  fi
+
+  # Still running — check log for panic messages just in case.
+  if grep -q "panicked at" "$SMOKE_LOG" 2>/dev/null; then
+    kill "$SMOKE_PID" 2>/dev/null || true
+    cat "$SMOKE_LOG"
+    rm -rf "$tmpdir"
+    echo ""
+    echo "✗ Daemon panicked on startup — see output above."
+    exit 1
+  fi
+
+  kill "$SMOKE_PID" 2>/dev/null || true
+  wait "$SMOKE_PID" 2>/dev/null || true
+fi
+
+rm -rf "$tmpdir"
 
 echo "✓ Pre-commit checks passed."
