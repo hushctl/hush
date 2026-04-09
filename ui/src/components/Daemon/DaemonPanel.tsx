@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from '@/store'
 import { statusColor } from '@/lib/status'
 import { StateSentence } from './StateSentence'
@@ -15,7 +15,6 @@ export function DaemonPanel() {
   const memorySamples = useStore(s => s.memorySamples)
   const openPane = useStore(s => s.openPane)
 
-  const panelRef = useRef<HTMLElement>(null)
   const [trustExpanded, setTrustExpanded] = useState(false)
 
   const daemon = selectedDaemonId ? daemons[selectedDaemonId] : null
@@ -28,19 +27,6 @@ export function DaemonPanel() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [closeDaemonDetail])
-
-  // Close on click outside
-  useEffect(() => {
-    function onPointerDown(e: PointerEvent) {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        closeDaemonDetail()
-      }
-    }
-    if (selectedDaemonId) {
-      document.addEventListener('pointerdown', onPointerDown)
-    }
-    return () => document.removeEventListener('pointerdown', onPointerDown)
-  }, [selectedDaemonId, closeDaemonDetail])
 
   if (!daemon) return null
 
@@ -56,9 +42,9 @@ export function DaemonPanel() {
 
   return (
     <aside
-      ref={panelRef}
       data-testid="daemon-panel"
-      className="absolute right-0 top-0 bottom-0 w-[420px] border-l border-border bg-background flex flex-col z-20 overflow-hidden"
+      className="fixed right-0 top-0 bottom-0 w-[420px] border-l border-border bg-background flex flex-col overflow-hidden"
+      style={{ zIndex: 9999 }}
     >
       {/* Header */}
       <div className="px-4 py-3 border-b border-border shrink-0">

@@ -38,6 +38,8 @@ function AppInner() {
   const fileList = useStore(s => s.fileList)
   const send = useStore(s => s.send)
   const openCmdP = useStore(s => s.openCmdP)
+  const selectedDaemonId = useStore(s => s.selectedDaemonId)
+  const closeDaemonDetail = useStore(s => s.closeDaemonDetail)
 
   // Global cmd+P handler: open quick-open targeting the last active pane
   useEffect(() => {
@@ -86,11 +88,18 @@ function AppInner() {
         >
           <TilingContainer />
         </div>
-        {/* Daemon detail panel — slide-in overlay, preserves canvas underneath */}
-        <DaemonPanel />
       </main>
       <CommandBar />
       <QuickOpen />
+      {/* Backdrop + daemon panel — fixed over the full viewport, always on top */}
+      {selectedDaemonId && (
+        <div
+          className="fixed inset-0 bg-background/60 backdrop-blur-sm"
+          style={{ zIndex: 9998 }}
+          onClick={closeDaemonDetail}
+        />
+      )}
+      <DaemonPanel />
     </div>
   )
 }
