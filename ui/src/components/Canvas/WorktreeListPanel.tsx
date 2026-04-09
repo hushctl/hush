@@ -10,7 +10,6 @@ export function WorktreeListPanel({ projectId }: Props) {
   const projects = useStore(s => s.projects)
   const worktrees = useStore(s => s.worktrees)
   const openPanel = useStore(s => s.openPanel)
-  const send = useStore(s => s.send)
 
   const project = projects[projectId]
   const projectWorktrees = Object.values(worktrees).filter(w => w.project_id === projectId)

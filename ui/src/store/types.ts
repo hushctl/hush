@@ -44,6 +44,20 @@ export interface DaemonConfig {
   connected: boolean
 }
 
+export interface TransferState {
+  transferId: string
+  phase: 'killing_pty' | 'archiving' | 'archiving_history' | 'dialing' | 'offering' | 'awaiting_ack' | 'streaming' | 'streaming_history' | 'awaiting_commit' | 'extracting' | 'installing_history' | 'spawning_pty' | 'complete' | 'failed'
+  bytesSent: number
+  totalBytes: number
+  sourceMachineId: string
+  destMachineId: string
+  /** Namespaced worktree key at the source — used to find the source dot in the grid */
+  sourceWorktreeKey: string
+  projectName: string
+  branch: string
+  errorMessage?: string
+}
+
 export interface AppState {
   // ── Per-daemon registry ───────────────────────────────────────────────────
   /** Keyed by machine_id. Persisted to localStorage. */
@@ -90,6 +104,10 @@ export interface AppState {
   cmdPOpen: boolean
   /** Which worktree the cmd+P modal targets */
   cmdPTargetWorktree: string | null
+
+  // ── Active transfers (keyed by transfer_id) ───────────────────────────────
+  /** Outbound transfers in progress from this browser's perspective */
+  transfers: Record<string, TransferState>
 
   // ── WebSocket send function (per machine_id, injected by hook) ───────────
   /**
@@ -143,6 +161,8 @@ export interface AppState {
   setModelStatus: (status: ModelStatus) => void
   /** Update Gemma model download progress */
   setModelProgress: (progress: number, file: string) => void
+  /** Manually dismiss a transfer card (used for failed transfers) */
+  dismissTransfer: (transferId: string) => void
 }
 
 export type { ModelStatus }

@@ -92,6 +92,58 @@ pub enum ClientMessage {
         url: String,
         peers: Vec<PeerInfo>,
     },
+
+    // ── Transfer: browser → source daemon ────────────────────────────────────
+
+    /// Move a single worktree to another daemon (browser → source daemon).
+    TransferWorktree {
+        worktree_id: String,
+        dest_machine_id: String,
+    },
+    /// Move an entire project (all worktrees) to another daemon.
+    TransferProject {
+        project_id: String,
+        dest_machine_id: String,
+    },
+    /// Remove a worktree record, kill its pty, and run `git worktree remove`.
+    RemoveWorktree {
+        worktree_id: String,
+    },
+
+    // ── Transfer: source daemon → destination daemon ──────────────────────────
+
+    /// First message: describes what is about to be transferred.
+    TransferOffer {
+        transfer_id: String,
+        from_machine_id: String,
+        project_name: String,
+        /// Absolute path of the project root on the source (hint for dest layout).
+        project_path_hint: String,
+        branch: String,
+        permission_mode: String,
+        session_id: Option<String>,
+        last_task: Option<String>,
+        /// Whether a history tar follows the working_dir tar.
+        has_history: bool,
+        /// Combined expected bytes (working_dir tar.gz + history tar).
+        total_bytes: u64,
+    },
+    /// Switch the binary-frame stream to a different payload kind.
+    /// Sent between the working_dir stream and the history stream.
+    TransferKindSwitch {
+        transfer_id: String,
+        /// "working_dir" | "history"
+        kind: String,
+    },
+    /// Source signals that all bytes have been sent; destination should apply.
+    TransferCommit {
+        transfer_id: String,
+    },
+    /// Either side can abort; destination should discard temp state.
+    TransferAbort {
+        transfer_id: String,
+        reason: String,
+    },
 }
 
 fn default_permission_mode() -> String {
@@ -202,6 +254,42 @@ pub enum ServerMessage {
         machine_id: String,
         worktree_id: String,
         code: Option<i32>,
+    },
+
+    // ── Transfer responses ────────────────────────────────────────────────────
+
+    /// Destination accepted the offer and reserved dest_path.
+    TransferAck {
+        machine_id: String,
+        transfer_id: String,
+        dest_path: String,
+    },
+    /// Destination applied the transfer and spawned the pty.
+    TransferComplete {
+        machine_id: String,
+        transfer_id: String,
+        new_worktree_id: String,
+    },
+    /// Transfer failed (either side).
+    TransferError {
+        machine_id: String,
+        transfer_id: String,
+        message: String,
+    },
+    /// Progress update broadcast to browsers on the source daemon.
+    /// Carries enough context for the UI overlay without a separate lookup.
+    TransferProgress {
+        machine_id: String,
+        transfer_id: String,
+        /// "starting" | "streaming" | "extracting" | "installing_history" | "spawning_pty" | "complete" | "failed"
+        phase: String,
+        bytes_sent: u64,
+        total_bytes: u64,
+        /// Raw (un-namespaced) worktree id on the source daemon.
+        source_worktree_id: String,
+        project_name: String,
+        branch: String,
+        dest_machine_id: String,
     },
 }
 

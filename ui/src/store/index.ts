@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { AppState, DaemonConfig, Panel, PanelKind } from './types'
-import type { ServerMessage, ProjectInfo, WorktreeInfo, ClientMessage, PeerInfo } from '@/lib/protocol'
+import type { ServerMessage, WorktreeInfo, ClientMessage, PeerInfo } from '@/lib/protocol'
 import { ptyBus, decodeBase64 } from '@/lib/ptyBus'
 
 const PANEL_DEFAULTS: Record<PanelKind, { width: number; height: number }> = {
@@ -64,6 +64,9 @@ export const useStore = create<AppState>()(
       fileContents: {},
       cmdPOpen: false,
       cmdPTargetWorktree: null,
+
+      // ── Transfers ─────────────────────────────────────────────────────────
+      transfers: {},
 
       // ── WebSocket send (injected by hook) ──────────────────────────────────
       send: (_machineId: string, _msg: ClientMessage) => {
@@ -274,7 +277,9 @@ export const useStore = create<AppState>()(
           }
 
           case 'peer_list': {
-            get().mergeDiscoveredPeers(msg.peers)
+            // Do NOT auto-connect to gossip peers — those are daemon-to-daemon
+            // addresses (Tailscale IPs, etc.) that may not be browser-reachable.
+            // The user explicitly registers daemons via the UI.
             break
           }
 
@@ -328,6 +333,70 @@ export const useStore = create<AppState>()(
           case 'shell_exit': {
             const nsId = nsKey(mid, msg.worktree_id)
             ptyBus.emit(`shell:${nsId}`, { kind: 'exit', code: msg.code })
+            break
+          }
+
+          case 'transfer_progress': {
+            set(state => {
+              const existing = state.transfers[msg.transfer_id]
+              const sourceWorktreeKey = `${msg.machine_id}:${msg.source_worktree_id}`
+              return {
+                transfers: {
+                  ...state.transfers,
+                  [msg.transfer_id]: {
+                    // Server-authoritative (always overwrite)
+                    phase: msg.phase,
+                    bytesSent: msg.bytes_sent,
+                    totalBytes: msg.total_bytes > 0 ? msg.total_bytes : (existing?.totalBytes ?? 0),
+                    // Metadata: use existing if already known, else take from server event
+                    transferId: existing?.transferId ?? msg.transfer_id,
+                    sourceMachineId: existing?.sourceMachineId ?? msg.machine_id,
+                    destMachineId: existing?.destMachineId ?? msg.dest_machine_id,
+                    sourceWorktreeKey: existing?.sourceWorktreeKey ?? sourceWorktreeKey,
+                    projectName: existing?.projectName ?? msg.project_name,
+                    branch: existing?.branch ?? msg.branch,
+                    errorMessage: existing?.errorMessage,
+                  },
+                },
+              }
+            })
+            break
+          }
+
+          case 'transfer_complete': {
+            // Mark complete, then remove after a short delay so the overlay can animate out
+            set(state => {
+              const existing = state.transfers[msg.transfer_id]
+              if (!existing) return {}
+              return {
+                transfers: {
+                  ...state.transfers,
+                  [msg.transfer_id]: { ...existing, phase: 'complete' },
+                },
+              }
+            })
+            setTimeout(() => {
+              set(state => {
+                const { [msg.transfer_id]: _, ...rest } = state.transfers
+                return { transfers: rest }
+              })
+            }, 6000)
+            break
+          }
+
+          case 'transfer_error': {
+            set(state => {
+              const t = state.transfers[msg.transfer_id]
+              if (!t) return {}
+              return {
+                transfers: {
+                  ...state.transfers,
+                  [msg.transfer_id]: { ...t, phase: 'failed', errorMessage: msg.message },
+                },
+              }
+            })
+            console.error('[transfer error]', msg.transfer_id, msg.message)
+            // Failed transfers stay visible until dismissed by the user
             break
           }
         }
@@ -556,6 +625,12 @@ export const useStore = create<AppState>()(
       setModelStatus: (status) => set({ modelStatus: status }),
 
       setModelProgress: (progress, file) => set({ modelProgress: progress, modelProgressFile: file }),
+
+      dismissTransfer: (transferId) =>
+        set(state => {
+          const { [transferId]: _, ...rest } = state.transfers
+          return { transfers: rest }
+        }),
     }),
     {
       name: 'mc-ui-prefs',

@@ -1,8 +1,10 @@
-import { useStore } from '@/store'
+import { useState, useEffect, useRef } from 'react'
+import { useStore, splitKey } from '@/store'
 import { statusColor } from '@/lib/status'
 import { StatusPill } from './StatusPill'
 import { Button } from '@/components/ui/button'
 import type { WorktreeInfo } from '@/lib/protocol'
+import type { TransferState } from '@/store/types'
 
 interface Props {
   worktree: WorktreeInfo
@@ -14,7 +16,46 @@ export function ProjectCard({ worktree, compact, onOpen }: Props) {
   const project = useStore(s => s.projects[worktree.project_id])
   const send = useStore(s => s.send)
   const openDaemonDetail = useStore(s => s.openDaemonDetail)
+  const daemons = useStore(s => s.daemons)
+  const transfers = useStore(s => s.transfers)
   const borderColor = statusColor(worktree.status)
+  const [transferOpen, setTransferOpen] = useState(false)
+  const transferRef = useRef<HTMLDivElement>(null)
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!transferOpen) return
+    function onOutside(e: MouseEvent) {
+      if (transferRef.current && !transferRef.current.contains(e.target as Node)) {
+        setTransferOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onOutside)
+    return () => document.removeEventListener('mousedown', onOutside)
+  }, [transferOpen])
+
+  // Other connected daemons (potential transfer destinations)
+  const otherDaemons = Object.values(daemons).filter(
+    d => d.connected && d.id !== worktree.machine_id
+  )
+
+  // Active outbound transfer for this worktree
+  const activeTransfer = Object.values(transfers).find(
+    (t): t is TransferState =>
+      t.sourceWorktreeKey === worktree.id &&
+      t.phase !== 'complete' && t.phase !== 'failed'
+  )
+
+  function handleTransfer(destMachineId: string) {
+    const [mid, rawWtId] = splitKey(worktree.id)
+    send(mid || worktree.machine_id, {
+      type: 'transfer_worktree',
+      worktree_id: rawWtId || worktree.id,
+      dest_machine_id: destMachineId,
+    })
+    setTransferOpen(false)
+  }
+
   const isNeedsYou = worktree.status === 'needs_you'
   const isFailed = worktree.status.startsWith('failed')
 
@@ -96,7 +137,7 @@ export function ProjectCard({ worktree, compact, onOpen }: Props) {
             variant="outline"
             size="sm"
             className="rounded-none shadow-none font-normal h-7 text-xs border-amber-400 text-amber-600 hover:bg-amber-50"
-            onClick={() => send({ type: 'pty_input', worktree_id: worktree.id, data: 'yes, proceed\r' })}
+            onClick={() => { const [mid, rawId] = splitKey(worktree.id); send(mid || worktree.machine_id, { type: 'pty_input', worktree_id: rawId || worktree.id, data: 'yes, proceed\r' }) }}
           >
             Approve
           </Button>
@@ -107,10 +148,44 @@ export function ProjectCard({ worktree, compact, onOpen }: Props) {
             variant="outline"
             size="sm"
             className="rounded-none shadow-none font-normal h-7 text-xs border-red-400 text-red-600 hover:bg-red-50"
-            onClick={() => send({ type: 'pty_input', worktree_id: worktree.id, data: 'please retry\r' })}
+            onClick={() => { const [mid, rawId] = splitKey(worktree.id); send(mid || worktree.machine_id, { type: 'pty_input', worktree_id: rawId || worktree.id, data: 'please retry\r' }) }}
           >
             Retry
           </Button>
+        )}
+        {otherDaemons.length > 0 && !activeTransfer && (
+          <div ref={transferRef} className="relative ml-auto">
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-none shadow-none font-normal h-7 text-xs"
+              onClick={() => setTransferOpen(v => !v)}
+            >
+              Transfer to…
+            </Button>
+            {transferOpen && (
+              <div className="absolute right-0 bottom-full mb-1 z-50 border border-border bg-background min-w-max">
+                {otherDaemons.map(d => (
+                  <button
+                    key={d.id}
+                    className="block w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-muted whitespace-nowrap"
+                    onClick={() => handleTransfer(d.id)}
+                  >
+                    {d.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {activeTransfer && (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-xs font-mono text-muted-foreground">
+              {activeTransfer.phase === 'streaming' && activeTransfer.totalBytes > 0
+                ? `→ ${Math.round(activeTransfer.bytesSent / 1024 / 1024 * 10) / 10} / ${Math.round(activeTransfer.totalBytes / 1024 / 1024 * 10) / 10} MB`
+                : activeTransfer.phase}
+            </span>
+          </div>
         )}
       </div>
     </div>

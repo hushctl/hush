@@ -1,4 +1,4 @@
-import { useStore, splitKey } from '@/store'
+import { useStore } from '@/store'
 import { statusColor } from '@/lib/status'
 import type { Panel } from '@/store/types'
 

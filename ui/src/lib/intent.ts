@@ -23,6 +23,8 @@ export type IntentResult =
   | { kind: 'tree'; projectId: string }
   | { kind: 'new_worktree'; projectId: string; branch: string }
   | { kind: 'inspect_daemon'; machineId: string }
+  | { kind: 'move_worktree'; worktreeId: string; destMachineId: string }
+  | { kind: 'move_project'; projectId: string; destMachineId: string }
 
 export interface IntentContext {
   projects: Record<string, ProjectInfo>
@@ -87,6 +89,29 @@ export function parseIntent(input: string, ctx: IntentContext): IntentResult {
       : Object.values(ctx.projects).at(-1) ?? null
     if (!project) return { kind: 'unknown', reason: 'no project to create worktree in' }
     return { kind: 'new_worktree', projectId: project.id, branch }
+  }
+
+  // move <project>[/<branch>] to <machine>
+  if (text.startsWith('move ') && text.includes(' to ')) {
+    const rest = text.slice(5)                         // "<proj>[/<branch>] to <machine>"
+    const toIdx = rest.lastIndexOf(' to ')
+    if (toIdx !== -1) {
+      const target = rest.slice(0, toIdx).trim()
+      const destName = rest.slice(toIdx + 4).trim()
+      const daemon = ctx.daemons ? findDaemon(destName, ctx.daemons) : null
+      if (!daemon) return { kind: 'unknown', reason: `no daemon matching "${destName}"` }
+
+      // Worktree-level transfer (project/branch)
+      if (target.includes('/')) {
+        const wt = resolveWorktreeRef(target, ctx)
+        if (!wt) return { kind: 'unknown', reason: `no worktree matching "${target}"` }
+        return { kind: 'move_worktree', worktreeId: wt.id, destMachineId: daemon.id }
+      }
+      // Project-level transfer
+      const project = findProject(target, ctx)
+      if (!project) return { kind: 'unknown', reason: `no project matching "${target}"` }
+      return { kind: 'move_project', projectId: project.id, destMachineId: daemon.id }
+    }
   }
 
   // open <project>/<branch>

@@ -138,6 +138,26 @@ export function CommandBar() {
       case 'inspect_daemon':
         openDaemonDetail(intent.machineId)
         return { ok: true }
+
+      case 'move_worktree': {
+        const [mid, rawWtId] = splitKey(intent.worktreeId)
+        send(mid || targetMachineId(), {
+          type: 'transfer_worktree',
+          worktree_id: rawWtId || intent.worktreeId,
+          dest_machine_id: intent.destMachineId,
+        })
+        return { ok: true }
+      }
+
+      case 'move_project': {
+        const [mid, rawProjId] = splitKey(intent.projectId)
+        send(mid || targetMachineId(), {
+          type: 'transfer_project',
+          project_id: rawProjId || intent.projectId,
+          dest_machine_id: intent.destMachineId,
+        })
+        return { ok: true }
+      }
     }
   }
 

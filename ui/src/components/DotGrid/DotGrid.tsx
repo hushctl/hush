@@ -7,6 +7,7 @@ import {
   type WorktreePosition,
 } from '@/lib/gridLayout'
 import { DetailCard } from './DetailCard'
+import { TransferOverlay } from './TransferOverlay'
 import type { WorktreeInfo } from '@/lib/protocol'
 
 /** One-line summary of all worktrees for the reboarding bar */
@@ -225,6 +226,9 @@ export function DotGrid() {
             />
           )
         })}
+
+        {/* Transfer overlay — connector paths + ghost dots + progress cards */}
+        <TransferOverlay positions={wtPositions} size={size} />
 
         {/* Hover detail card — HTML overlay */}
         {hovered && (

@@ -9,6 +9,7 @@ import { CommandBar } from '@/components/Layout/CommandBar'
 import { MemoryBanner } from '@/components/Layout/MemoryBanner'
 import { QuickOpen } from '@/components/FileViewer/QuickOpen'
 import { DaemonPanel } from '@/components/Daemon/DaemonPanel'
+import { TransferStatusCards } from '@/components/Layout/TransferStatusCards'
 import { startModelLoad } from '@/lib/gemma/bridge'
 
 function DisconnectedScreen() {
@@ -105,6 +106,7 @@ function AppInner() {
         </div>
       </main>
       <CommandBar />
+      <TransferStatusCards />
       <QuickOpen />
       {/* Backdrop + daemon panel — fixed over the full viewport, always on top */}
       {selectedDaemonId && (

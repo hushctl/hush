@@ -65,13 +65,27 @@ async fn run_gossip_round(state: Arc<RwLock<DaemonState>>, state_path: &PathBuf)
 
     let mut newly_learned: Vec<PeerInfo> = Vec::new();
     let mut contacted: Vec<String> = Vec::new();
+    // Placeholder entries that turned out to point at ourselves — remove them.
+    let mut self_placeholder_ids: Vec<String> = Vec::new();
 
     for peer in &peers {
         if peer.url.is_empty() {
             continue;
         }
+        // Skip our own advertise URL to avoid dialing ourselves
+        if !advertise_url.is_empty() && peer.url == advertise_url {
+            self_placeholder_ids.push(peer.machine_id.clone());
+            continue;
+        }
         match dial_peer(&machine_id, &advertise_url, &peers, &peer.url).await {
-            Ok(received_peers) => {
+            Ok((responder_id, received_peers)) => {
+                // If the peer responded with our own machine_id it's a self-dial
+                // (e.g. stale --join seed pointing at our own IP or localhost).
+                if responder_id == machine_id {
+                    debug!("gossip: {} ({}) resolved to ourselves — removing placeholder", peer.machine_id, peer.url);
+                    self_placeholder_ids.push(peer.machine_id.clone());
+                    continue;
+                }
                 contacted.push(peer.machine_id.clone());
                 for rp in received_peers {
                     // Don't add ourselves, and skip blank URLs
@@ -86,13 +100,17 @@ async fn run_gossip_round(state: Arc<RwLock<DaemonState>>, state_path: &PathBuf)
         }
     }
 
-    // Merge results + update last_seen + prune stale
+    // Merge results + update last_seen + prune stale + remove self-placeholders
     {
         let mut s = state.write().await;
         for mid in &contacted {
             s.touch_peer(mid);
         }
         s.merge_peers(newly_learned);
+        // Remove any entries we discovered were pointing at ourselves
+        for mid in &self_placeholder_ids {
+            s.peers.retain(|p| &p.machine_id != mid);
+        }
         s.prune_stale(STALE_AFTER_SECS);
         s.save(state_path);
     }
@@ -103,13 +121,13 @@ async fn run_gossip_round(state: Arc<RwLock<DaemonState>>, state_path: &PathBuf)
 }
 
 /// Open a temporary WebSocket to `url`, send `peer_hello`, read the `peer_list`
-/// response, close, and return the received peers.
+/// response, close, and return `(responder_machine_id, received_peers)`.
 async fn dial_peer(
     my_machine_id: &str,
     my_url: &str,
     my_peers: &[PeerInfo],
     peer_url: &str,
-) -> Result<Vec<PeerInfo>, String> {
+) -> Result<(String, Vec<PeerInfo>), String> {
     let hello = serde_json::json!({
         "type": "peer_hello",
         "machine_id": my_machine_id,
@@ -156,6 +174,12 @@ async fn dial_peer(
         return Err(format!("expected peer_list, got: {text}"));
     }
 
+    let responder_id = value
+        .get("machine_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     let peers: Vec<PeerInfo> = value
         .get("peers")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -172,5 +196,5 @@ async fn dial_peer(
         })
         .collect();
 
-    Ok(peers)
+    Ok((responder_id, peers))
 }

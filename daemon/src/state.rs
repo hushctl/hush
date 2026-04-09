@@ -52,6 +52,9 @@ pub struct Worktree {
     pub last_task: Option<String>,
     /// Claude Code session_id captured from the init event; used for --resume
     pub session_id: Option<String>,
+    /// Set when this worktree was transferred from another machine.
+    #[serde(default)]
+    pub origin_machine_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -218,6 +221,7 @@ impl DaemonState {
             status: WorktreeStatus::Idle,
             last_task: None,
             session_id: None,
+            origin_machine_id: None,
         };
 
         let info = WorktreeInfo {
@@ -235,11 +239,90 @@ impl DaemonState {
         Ok(info)
     }
 
+    /// Like add_worktree but also sets session_id, last_task, and origin_machine_id for transfers.
+    pub fn add_worktree_transferred(
+        &mut self,
+        project_id: &str,
+        branch: String,
+        working_dir: PathBuf,
+        permission_mode: String,
+        session_id: Option<String>,
+        last_task: Option<String>,
+        origin_machine_id: String,
+    ) -> Result<WorktreeInfo, String> {
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| format!("Project {project_id} not found"))?;
+
+        let id = format!("wt_{}", self.next_worktree_id);
+        self.next_worktree_id += 1;
+
+        let worktree = Worktree {
+            id: id.clone(),
+            project_id: project_id.to_string(),
+            branch: branch.clone(),
+            working_dir: working_dir.clone(),
+            permission_mode: permission_mode.clone(),
+            status: WorktreeStatus::Idle,
+            last_task: last_task.clone(),
+            session_id: session_id.clone(),
+            origin_machine_id: Some(origin_machine_id.clone()),
+        };
+
+        let info = WorktreeInfo {
+            id: id.clone(),
+            project_id: project_id.to_string(),
+            branch,
+            working_dir: working_dir.to_string_lossy().to_string(),
+            status: worktree.status.as_str(),
+            last_task,
+            session_id,
+            machine_id: self.machine_id.clone(),
+        };
+
+        project.worktrees.push(worktree);
+        Ok(info)
+    }
+
     pub fn find_worktree_mut(&mut self, id: &str) -> Option<&mut Worktree> {
         self.projects
             .iter_mut()
             .flat_map(|p| p.worktrees.iter_mut())
             .find(|w| w.id == id)
+    }
+
+    /// Remove a worktree by id, returning the removed record (caller saves state).
+    pub fn remove_worktree(&mut self, id: &str) -> Option<Worktree> {
+        for project in &mut self.projects {
+            if let Some(pos) = project.worktrees.iter().position(|w| w.id == id) {
+                return Some(project.worktrees.remove(pos));
+            }
+        }
+        None
+    }
+
+    /// Remove a project if it has no worktrees left.
+    pub fn remove_project_if_empty(&mut self, project_id: &str) {
+        self.projects.retain(|p| !(p.id == project_id && p.worktrees.is_empty()));
+    }
+
+    /// Ensure a project is registered under the given name and path, returning its id.
+    /// Idempotent: returns the existing id if the path is already known.
+    pub fn upsert_project_for_transfer(&mut self, name: &str, path: PathBuf) -> String {
+        if let Some(p) = self.projects.iter().find(|p| p.path == path) {
+            return p.id.clone();
+        }
+        let id = format!("proj_{}", self.next_project_id);
+        self.next_project_id += 1;
+        self.projects.push(Project {
+            id: id.clone(),
+            name: name.to_string(),
+            path,
+            worktrees: Vec::new(),
+        });
+        id
     }
 
     pub fn find_worktree(&self, id: &str) -> Option<&Worktree> {

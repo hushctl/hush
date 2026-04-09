@@ -1,3 +1,4 @@
+mod claude_history;
 mod git_watcher;
 mod gossip;
 mod hooks;
@@ -6,6 +7,7 @@ mod protocol;
 mod pty;
 mod state;
 mod tls;
+mod transfer;
 mod trust;
 mod upgrade;
 mod ws;
@@ -27,6 +29,7 @@ use crate::git_watcher::GitWatcher;
 use crate::protocol::ServerMessage;
 use crate::pty::PtyManager;
 use crate::state::{DaemonState, PeerInfo};
+use crate::transfer::{InboundTransfers, new_inbound_transfers};
 
 #[derive(clap::Subcommand)]
 enum SubCommand {
@@ -82,6 +85,12 @@ struct Args {
     /// Can be specified multiple times. Merged into state.peers once, then persisted.
     #[arg(long)]
     join: Vec<String>,
+
+    /// Directory for TLS CA and leaf cert (default: same dir as state file).
+    /// Useful when running two daemons on the same machine — point both to
+    /// the same --tls-dir so they share the already-trusted CA.
+    #[arg(long)]
+    tls_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -91,6 +100,7 @@ struct AppState {
     tx: broadcast::Sender<ServerMessage>,
     pty_manager: PtyManager,
     git_watcher: GitWatcher,
+    inbound_transfers: InboundTransfers,
 }
 
 #[tokio::main]
@@ -228,7 +238,12 @@ async fn main() {
     let (tx, _rx) = broadcast::channel::<ServerMessage>(256);
 
     // Hook listener Unix socket — hush-hook shim writes status events here
-    let hook_socket = hooks::default_socket_path();
+    // Derive hook socket from state dir so two daemons on the same machine
+    // don't share the same socket.
+    let hook_socket = state_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("/tmp"))
+        .join("hooks.sock");
     let hush_hook_path = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("hush-hook")))
@@ -250,12 +265,16 @@ async fn main() {
     // Memory pressure monitor — polls system memory every 15s, alerts on transitions
     memory_monitor::spawn(machine_id.clone(), tx.clone());
 
+    // Clean up any stale transfer temp files from a previous crash
+    transfer::clean_transfers_dir(&state_path);
+
     let app_state = AppState {
         daemon_state,
         state_path: state_path.clone(),
         tx,
         pty_manager,
         git_watcher,
+        inbound_transfers: new_inbound_transfers(),
     };
 
     let app = Router::new()
@@ -265,9 +284,13 @@ async fn main() {
 
     let addr = format!("{}:{}", args.bind, args.port);
 
-    // Load or generate self-signed TLS cert
-    let hush_dir = state_path.parent().unwrap_or(std::path::Path::new("."));
-    let tls_material = tls::load_or_generate(hush_dir, &machine_id)
+    // Load or generate self-signed TLS cert.
+    // --tls-dir overrides the default (state file dir) so two daemons on the
+    // same machine can share the already-trusted CA.
+    let tls_hush_dir = args.tls_dir
+        .as_deref()
+        .unwrap_or_else(|| state_path.parent().unwrap_or(std::path::Path::new(".")));
+    let tls_material = tls::load_or_generate(tls_hush_dir, &machine_id)
         .expect("Failed to load/generate TLS certificate");
 
     // Derive a useful host for the browser hint — prefer the advertise URL's host over 0.0.0.0
@@ -318,6 +341,7 @@ async fn ws_handler(
             app_state.tx,
             app_state.pty_manager,
             app_state.git_watcher,
+            app_state.inbound_transfers,
         )
     })
 }

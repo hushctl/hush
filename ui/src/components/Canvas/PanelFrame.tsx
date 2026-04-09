@@ -1,5 +1,5 @@
 import { useRef, useCallback } from 'react'
-import { useStore, splitKey } from '@/store'
+import { useStore } from '@/store'
 import { statusColor } from '@/lib/status'
 import { X } from 'lucide-react'
 import { TerminalPane } from '@/components/Terminal/TerminalPane'

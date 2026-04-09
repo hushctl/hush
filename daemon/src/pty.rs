@@ -239,13 +239,18 @@ impl PtyManager {
     }
 
     /// Spawn a fresh `claude` pty for the given worktree. If one already
-    /// exists, this is a no-op (returns Ok). Uses `claude --continue` so that
-    /// it picks up the prior session for that working directory if any.
+    /// exists, this is a no-op (returns Ok).
+    ///
+    /// `session_id` controls how the session is resumed:
+    /// - `Some(id)` → `claude --resume <id>` (exact session by ID)
+    /// - `None` with `has_session=true` → `claude --continue` (resume by cwd)
+    /// - `None` with `has_session=false` → fresh session
     pub async fn spawn(
         &self,
         worktree_id: String,
         working_dir: &Path,
         permission_mode: &str,
+        session_id: Option<&str>,
         has_session: bool,
         cols: u16,
         rows: u16,
@@ -277,7 +282,10 @@ impl PtyManager {
         }
 
         let mut cmd = CommandBuilder::new("claude");
-        if has_session {
+        if let Some(id) = session_id {
+            cmd.arg("--resume");
+            cmd.arg(id);
+        } else if has_session {
             cmd.arg("--continue");
         }
         // "dangerously-skip-permissions" maps to the dedicated flag; all other

@@ -50,6 +50,10 @@ export type ClientMessage =
   | { type: 'shell_input'; worktree_id: string; data: string }
   | { type: 'shell_resize'; worktree_id: string; cols: number; rows: number }
   | { type: 'shell_kill'; worktree_id: string }
+  // Transfer
+  | { type: 'transfer_worktree'; worktree_id: string; dest_machine_id: string }
+  | { type: 'transfer_project'; project_id: string; dest_machine_id: string }
+  | { type: 'remove_worktree'; worktree_id: string }
 
 // ─── Daemon → Client ──────────────────────────────────────────────────────────
 
@@ -71,3 +75,8 @@ export type ServerMessage =
   | { type: 'shell_scrollback'; machine_id: string; worktree_id: string; data: string }
   | { type: 'shell_exit'; machine_id: string; worktree_id: string; code: number | null }
   | { type: 'memory_pressure'; machine_id: string; level: 'normal' | 'warning' | 'critical'; available_bytes: number; total_bytes: number }
+  // Transfer
+  | { type: 'transfer_ack'; machine_id: string; transfer_id: string; dest_path: string }
+  | { type: 'transfer_complete'; machine_id: string; transfer_id: string; new_worktree_id: string }
+  | { type: 'transfer_error'; machine_id: string; transfer_id: string; message: string }
+  | { type: 'transfer_progress'; machine_id: string; transfer_id: string; phase: 'killing_pty' | 'archiving' | 'archiving_history' | 'dialing' | 'offering' | 'awaiting_ack' | 'streaming' | 'streaming_history' | 'awaiting_commit' | 'extracting' | 'installing_history' | 'spawning_pty' | 'complete' | 'failed'; bytes_sent: number; total_bytes: number; source_worktree_id: string; project_name: string; branch: string; dest_machine_id: string }
