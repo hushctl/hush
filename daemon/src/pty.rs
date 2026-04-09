@@ -20,6 +20,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info, warn};
 
+use crate::claude_history;
 use crate::protocol::ServerMessage;
 
 /// Maximum scrollback retained per pty (bytes). On reattach, the daemon
@@ -286,7 +287,14 @@ impl PtyManager {
             cmd.arg("--resume");
             cmd.arg(id);
         } else if has_session {
-            cmd.arg("--continue");
+            // Only pass --continue if Claude actually has history for this cwd.
+            // Without this check, a missing/wrong slug causes an immediate exit
+            // ("No conversation found to continue") leaving the user with a dead pty.
+            let has_history = claude_history::history_dir_for(working_dir)
+                .map_or(false, |d| d.exists());
+            if has_history {
+                cmd.arg("--continue");
+            }
         }
         // "dangerously-skip-permissions" maps to the dedicated flag; all other
         // values are passed as --permission-mode <value>.
