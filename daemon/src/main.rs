@@ -146,7 +146,7 @@ async fn main() {
         });
     }
 
-    // Migrate ws:// → wss:// in persisted advertise_url and peer URLs
+    // Migrate ws:// → wss:// in persisted advertise_url, peer URLs, and placeholder machine_ids
     if daemon_state.advertise_url.starts_with("ws://") {
         let new_url = daemon_state.advertise_url.replacen("ws://", "wss://", 1);
         info!("Migrated advertise_url: ws:// → wss:// ({})", new_url);
@@ -157,6 +157,15 @@ async fn main() {
             peer.url = peer.url.replacen("ws://", "wss://", 1);
             info!("Migrated peer URL → wss:// ({})", peer.url);
         }
+        // Placeholder machine_ids (the --join URL, before the real ID is learned via gossip)
+        if peer.machine_id.starts_with("ws://") {
+            peer.machine_id = peer.machine_id.replacen("ws://", "wss://", 1);
+        }
+    }
+    // Deduplicate peers by URL — repeated --join invocations can create duplicate placeholder entries
+    {
+        let mut seen = std::collections::HashSet::new();
+        daemon_state.peers.retain(|p| seen.insert(p.url.clone()));
     }
 
     daemon_state.save(&state_path);
@@ -167,6 +176,7 @@ async fn main() {
     );
 
     let machine_id = daemon_state.machine_id.clone();
+    let advertise_url = daemon_state.advertise_url.clone();
     let daemon_state = Arc::new(RwLock::new(daemon_state));
 
     // Global broadcast channel — capacity 256 events
@@ -212,9 +222,19 @@ async fn main() {
     let tls_material = tls::load_or_generate(hush_dir, &machine_id)
         .expect("Failed to load/generate TLS certificate");
 
+    // Derive a useful host for the browser hint — prefer the advertise URL's host over 0.0.0.0
+    let hint_host = if !advertise_url.is_empty() {
+        advertise_url
+            .trim_start_matches("wss://")
+            .trim_start_matches("ws://")
+            .trim_end_matches("/ws")
+            .to_string()
+    } else {
+        format!("localhost:{}", args.port)
+    };
     info!("Hush Daemon listening on wss://{addr}/ws");
     info!("  Cert fingerprint (SHA-256): {}", tls_material.fingerprint);
-    info!("  Browser: visit https://{addr}/health once to trust the self-signed cert");
+    info!("  Browser: visit https://{hint_host}/health once to trust the self-signed cert");
 
     let rustls_config = RustlsConfig::from_pem(tls_material.cert_pem, tls_material.key_pem)
         .await
