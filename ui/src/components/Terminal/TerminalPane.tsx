@@ -55,11 +55,14 @@ export function TerminalPane({ worktreeId }: Props) {
       send(machineId, { type: 'pty_attach', worktree_id: rawWorktreeId, cols, rows })
     })
 
-    // Intercept shift+Enter before xterm maps it to \r (same as plain Enter).
-    // Claude Code's multi-line input distinguishes soft newlines via \n (0x0a).
+    // Intercept Shift+Enter before xterm maps it to \r (same as plain Enter).
+    // Claude Code expects the kitty keyboard protocol sequence for Shift+Enter
+    // (\x1b[13;2u), which is what VSCode's xterm.js sends. Without this,
+    // Shift+Enter is indistinguishable from plain Enter and multi-line input
+    // never triggers.
     term.attachCustomKeyEventHandler(e => {
       if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey) {
-        sendRef.current(machineId, { type: 'pty_input', worktree_id: rawWorktreeId, data: '\n' })
+        sendRef.current(machineId, { type: 'pty_input', worktree_id: rawWorktreeId, data: '\x1b[13;2u' })
         return false // prevent xterm's default \r handling
       }
       return true
