@@ -44,6 +44,7 @@ export function CommandBar() {
   const addDaemon = useStore(s => s.addDaemon)
   const pendingCreate = useStore(s => s.pendingCreate)
   const clearPendingCreate = useStore(s => s.clearPendingCreate)
+  const openDaemonDetail = useStore(s => s.openDaemonDetail)
 
   /** ID of the daemon to use for workspace mutations.
    *  Prefers the first connected daemon; falls back to first registered. */
@@ -57,7 +58,7 @@ export function CommandBar() {
     const text = value.trim()
     if (!text) return
 
-    const intent = parseIntent(text, { projects, worktrees })
+    const intent = parseIntent(text, { projects, worktrees, daemons })
 
     const result = dispatchIntent(intent)
     if (result.ok) {
@@ -111,6 +112,10 @@ export function CommandBar() {
         })
         return { ok: true }
       }
+
+      case 'inspect_daemon':
+        openDaemonDetail(intent.machineId)
+        return { ok: true }
     }
   }
 

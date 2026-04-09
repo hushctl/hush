@@ -69,6 +69,10 @@ export interface AppState {
   pendingCreate: { path: string; name: string; machineId: string } | null
   // Per-machine memory pressure alerts — keyed by machine_id, cleared on level: "normal"
   memoryAlerts: Record<string, { level: 'warning' | 'critical'; availableBytes: number; totalBytes: number }>
+  // Daemon detail panel — which daemon is currently shown (null = closed)
+  selectedDaemonId: string | null
+  // Per-machine memory sample ring (cap 30) — fed by memory_pressure messages, used by sparkline
+  memorySamples: Record<string, Array<{ t: number; ratio: number }>>
 
   // ── File viewer state ─────────────────────────────────────────────────────
   /** Live git status per namespaced worktree id */
@@ -126,4 +130,8 @@ export interface AppState {
   openCmdP: (worktreeId: string) => void
   /** Close the cmd+P modal */
   closeCmdP: () => void
+  /** Open the daemon detail panel for the given machine_id */
+  openDaemonDetail: (machineId: string) => void
+  /** Close the daemon detail panel */
+  closeDaemonDetail: () => void
 }

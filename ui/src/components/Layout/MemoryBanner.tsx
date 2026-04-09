@@ -1,12 +1,13 @@
 import { useStore } from '@/store'
 
-function fmtBytes(bytes: number): string {
+export function fmtBytes(bytes: number): string {
   const gb = bytes / (1024 * 1024 * 1024)
   return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(bytes / (1024 * 1024)).toFixed(0)} MB`
 }
 
 export function MemoryBanner() {
   const memoryAlerts = useStore(s => s.memoryAlerts)
+  const openDaemonDetail = useStore(s => s.openDaemonDetail)
   const entries = Object.entries(memoryAlerts)
   if (entries.length === 0) return null
 
@@ -21,9 +22,10 @@ export function MemoryBanner() {
         const total = fmtBytes(alert.totalBytes)
 
         return (
-          <div
+          <button
             key={machineId}
-            className={`border-b px-3 py-1.5 flex items-center gap-2 text-xs font-mono ${colorClass} ${bgClass}`}
+            className={`w-full border-b px-3 py-1.5 flex items-center gap-2 text-xs font-mono text-left cursor-pointer ${colorClass} ${bgClass}`}
+            onClick={() => openDaemonDetail(machineId)}
           >
             <span className="shrink-0">▲</span>
             <span>
@@ -31,7 +33,7 @@ export function MemoryBanner() {
               {' — '}
               {label}: {avail} / {total} available. Consider closing heavy sessions or other apps.
             </span>
-          </div>
+          </button>
         )
       })}
     </div>

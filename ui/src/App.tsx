@@ -8,6 +8,7 @@ import { TilingContainer } from '@/components/Layout/TilingContainer'
 import { CommandBar } from '@/components/Layout/CommandBar'
 import { MemoryBanner } from '@/components/Layout/MemoryBanner'
 import { QuickOpen } from '@/components/FileViewer/QuickOpen'
+import { DaemonPanel } from '@/components/Daemon/DaemonPanel'
 
 function DisconnectedScreen() {
   return (
@@ -85,6 +86,8 @@ function AppInner() {
         >
           <TilingContainer />
         </div>
+        {/* Daemon detail panel — slide-in overlay, preserves canvas underneath */}
+        <DaemonPanel />
       </main>
       <CommandBar />
       <QuickOpen />

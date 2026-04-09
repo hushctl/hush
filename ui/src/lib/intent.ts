@@ -11,6 +11,7 @@
 //   new worktree <branch>[ in <project>]
 
 import type { ProjectInfo, WorktreeInfo } from './protocol'
+import type { DaemonConfig } from '@/store/types'
 
 export type IntentResult =
   | { kind: 'unknown'; reason: string }
@@ -20,15 +21,27 @@ export type IntentResult =
   | { kind: 'show_needs_me' }
   | { kind: 'tree'; projectId: string }
   | { kind: 'new_worktree'; projectId: string; branch: string }
+  | { kind: 'inspect_daemon'; machineId: string }
 
 export interface IntentContext {
   projects: Record<string, ProjectInfo>
   worktrees: Record<string, WorktreeInfo>
+  daemons?: Record<string, DaemonConfig>
 }
 
 export function parseIntent(input: string, ctx: IntentContext): IntentResult {
   const text = input.trim().toLowerCase()
   if (!text) return { kind: 'unknown', reason: 'empty input' }
+
+  // daemon <name> / inspect <name>
+  if (text.startsWith('daemon ') || text.startsWith('inspect ')) {
+    const target = text.startsWith('daemon ') ? text.slice(7).trim() : text.slice(8).trim()
+    if (target && ctx.daemons) {
+      const daemon = findDaemon(target, ctx.daemons)
+      if (daemon) return { kind: 'inspect_daemon', machineId: daemon.id }
+      return { kind: 'unknown', reason: `no daemon matching "${target}"` }
+    }
+  }
 
   // back to grid
   if (text === 'back to grid' || text === 'grid' || text === 'back') {
@@ -117,6 +130,17 @@ export function parseIntent(input: string, ctx: IntentContext): IntentResult {
   }
 
   return { kind: 'unknown', reason: `don't recognize "${input}"` }
+}
+
+function findDaemon(name: string, daemons: Record<string, DaemonConfig>): DaemonConfig | null {
+  const lower = name.toLowerCase()
+  for (const d of Object.values(daemons)) {
+    if (d.name.toLowerCase() === lower || d.id.toLowerCase() === lower) return d
+  }
+  for (const d of Object.values(daemons)) {
+    if (d.name.toLowerCase().startsWith(lower) || d.id.toLowerCase().startsWith(lower)) return d
+  }
+  return null
 }
 
 function findProject(name: string, ctx: IntentContext): ProjectInfo | null {

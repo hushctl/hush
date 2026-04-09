@@ -13,6 +13,7 @@ interface Props {
 export function ProjectCard({ worktree, compact, onOpen }: Props) {
   const project = useStore(s => s.projects[worktree.project_id])
   const send = useStore(s => s.send)
+  const openDaemonDetail = useStore(s => s.openDaemonDetail)
   const borderColor = statusColor(worktree.status)
   const isNeedsYou = worktree.status === 'needs_you'
   const isFailed = worktree.status.startsWith('failed')
@@ -68,6 +69,14 @@ export function ProjectCard({ worktree, compact, onOpen }: Props) {
           <div className="text-sm font-normal truncate">{worktree.last_task}</div>
         )}
         <div className="text-xs text-muted-foreground font-mono truncate">{worktree.working_dir}</div>
+        {worktree.machine_id && (
+          <button
+            className="text-xs font-mono border border-border text-muted-foreground px-1.5 py-0.5 hover:border-foreground hover:text-foreground transition-colors self-start"
+            onClick={e => { e.stopPropagation(); openDaemonDetail(worktree.machine_id) }}
+          >
+            {worktree.machine_id}
+          </button>
+        )}
       </div>
 
       {/* Actions */}

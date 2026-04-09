@@ -52,6 +52,8 @@ export const useStore = create<AppState>()(
       daemonError: null,
       pendingCreate: null,
       memoryAlerts: {},
+      selectedDaemonId: null,
+      memorySamples: {},
 
       // ── File viewer state ──────────────────────────────────────────────────
       gitStatus: {},
@@ -255,7 +257,15 @@ export const useStore = create<AppState>()(
                   totalBytes: msg.total_bytes,
                 }
               }
-              return { memoryAlerts: next }
+              // Push sample into ring buffer (cap 30) for sparkline
+              const prevSamples = state.memorySamples[msg.machine_id] ?? []
+              const ratio = msg.total_bytes > 0 ? msg.available_bytes / msg.total_bytes : 0
+              const newSample = { t: Date.now(), ratio }
+              const samples = [...prevSamples, newSample].slice(-30)
+              return {
+                memoryAlerts: next,
+                memorySamples: { ...state.memorySamples, [msg.machine_id]: samples },
+              }
             })
             break
           }
@@ -535,6 +545,10 @@ export const useStore = create<AppState>()(
       openCmdP: (worktreeId) => set({ cmdPOpen: true, cmdPTargetWorktree: worktreeId }),
 
       closeCmdP: () => set({ cmdPOpen: false, cmdPTargetWorktree: null }),
+
+      openDaemonDetail: (machineId) => set({ selectedDaemonId: machineId }),
+
+      closeDaemonDetail: () => set({ selectedDaemonId: null }),
     }),
     {
       name: 'mc-ui-prefs',
