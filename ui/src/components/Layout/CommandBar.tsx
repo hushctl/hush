@@ -27,7 +27,7 @@ export function CommandBar() {
   const [setupData, setSetupData] = useState({
     projectPath: '', projectName: '', branch: '',
     daemonUrl: 'wss://localhost:9111/ws', daemonName: '',
-    machineId: '',
+    machineId: '', permissionMode: 'plan',
   })
 
   const send = useStore(s => s.send)
@@ -107,7 +107,7 @@ export function CommandBar() {
           type: 'create_worktree',
           project_id: rawProjId || intent.projectId,
           branch: intent.branch,
-          permission_mode: 'plan',
+          permission_mode: setupData.permissionMode,
         })
         return { ok: true }
       }
@@ -126,7 +126,7 @@ export function CommandBar() {
   }
 
   function handleCreateWorktree() {
-    const { branch } = setupData
+    const { branch, permissionMode } = setupData
     const lastProject = Object.values(projects).at(-1)
     if (!lastProject || !branch.trim()) return
     const [mid, rawProjId] = splitKey(lastProject.id)
@@ -134,11 +134,11 @@ export function CommandBar() {
       type: 'create_worktree',
       project_id: rawProjId || lastProject.id,
       branch: branch.trim(),
-      permission_mode: 'plan',
+      permission_mode: permissionMode,
     })
     setShowSetup(false)
     setSetupStep(null)
-    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'wss://localhost:9111/ws', daemonName: '', machineId: '' })
+    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'wss://localhost:9111/ws', daemonName: '', machineId: '', permissionMode: 'plan' })
   }
 
   function handleAddDaemon() {
@@ -309,7 +309,7 @@ export function CommandBar() {
             </div>
           )}
           {setupStep === 'worktree' && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-mono text-muted-foreground shrink-0">branch:</span>
               <input
                 data-testid="setup-branch-input"
@@ -320,6 +320,16 @@ export function CommandBar() {
                 onKeyDown={e => { if (e.key === 'Enter') handleCreateWorktree() }}
                 autoFocus
               />
+              <span className="text-xs font-mono text-muted-foreground shrink-0">mode:</span>
+              {(['plan', 'default', 'auto', 'dangerously-skip-permissions'] as const).map(mode => (
+                <button
+                  key={mode}
+                  className={`px-2 py-1 text-xs font-mono border ${setupData.permissionMode === mode ? 'border-foreground' : 'border-border text-muted-foreground'} hover:border-foreground transition-colors`}
+                  onClick={() => setSetupData(d => ({ ...d, permissionMode: mode }))}
+                >
+                  {mode}
+                </button>
+              ))}
               <Button size="sm" className="rounded-none shadow-none font-normal" onClick={handleCreateWorktree}>
                 Create worktree
               </Button>

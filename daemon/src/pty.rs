@@ -280,8 +280,14 @@ impl PtyManager {
         if has_session {
             cmd.arg("--continue");
         }
-        cmd.arg("--permission-mode");
-        cmd.arg(permission_mode);
+        // "dangerously-skip-permissions" maps to the dedicated flag; all other
+        // values are passed as --permission-mode <value>.
+        if permission_mode == "dangerously-skip-permissions" {
+            cmd.arg("--dangerously-skip-permissions");
+        } else {
+            cmd.arg("--permission-mode");
+            cmd.arg(permission_mode);
+        }
         cmd.cwd(working_dir);
         // Pass through env so claude finds its config / PATH
         for (key, value) in std::env::vars() {
