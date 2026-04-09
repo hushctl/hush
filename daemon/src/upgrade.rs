@@ -3,18 +3,6 @@ use std::io::Write as _;
 const REPO: &str = "kushalhalder/hush";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[derive(serde::Deserialize)]
-struct Release {
-    tag_name: String,
-    assets: Vec<Asset>,
-}
-
-#[derive(serde::Deserialize)]
-struct Asset {
-    name: String,
-    browser_download_url: String,
-}
-
 pub async fn run() {
     if let Err(e) = do_upgrade().await {
         eprintln!("error: {e}");
@@ -27,27 +15,35 @@ async fn do_upgrade() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "macos" => "darwin",
         other => other,
     };
-    // Rust reports "aarch64" on Apple Silicon, "x86_64" on Intel — matches our asset names
     let arch = std::env::consts::ARCH;
     let asset_name = format!("hush-{os}-{arch}.tar.gz");
 
+    // Preflight: ensure gh is installed and authenticated.
+    if let Err(e) = run_gh(&["--version"]).await {
+        return Err(format!(
+            "gh CLI not found or not working: {e}\n\
+             Install it with: brew install gh\n\
+             Then authenticate with: gh auth login"
+        )
+        .into());
+    }
+
     println!("hush v{CURRENT_VERSION} — checking for updates...");
 
-    let client = reqwest::Client::builder()
-        .user_agent(format!("hush/{CURRENT_VERSION}"))
-        .build()?;
+    // Fetch latest release tag.
+    let json = run_gh(&[
+        "release", "view",
+        "--repo", REPO,
+        "--json", "tagName",
+    ])
+    .await
+    .map_err(|e| format!("failed to fetch latest release: {e}"))?;
 
-    let release: Release = client
-        .get(format!(
-            "https://api.github.com/repos/{REPO}/releases/latest"
-        ))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-
-    let latest = release.tag_name.trim_start_matches('v');
+    let tag: serde_json::Value = serde_json::from_str(&json)?;
+    let tag_name = tag["tagName"]
+        .as_str()
+        .ok_or("unexpected JSON from gh release view")?;
+    let latest = tag_name.trim_start_matches('v');
 
     if latest == CURRENT_VERSION {
         println!("Already up to date (v{CURRENT_VERSION}).");
@@ -55,32 +51,36 @@ async fn do_upgrade() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     println!("New version available: v{latest}  (current: v{CURRENT_VERSION})");
+    println!("Downloading {asset_name}...");
 
-    let asset = release
-        .assets
-        .iter()
-        .find(|a| a.name == asset_name)
-        .ok_or_else(|| {
-            format!("No asset '{asset_name}' in release v{latest}. Check https://github.com/{REPO}/releases/tag/{}", release.tag_name)
-        })?;
+    // Download the asset into a temp directory.
+    let pid = std::process::id();
+    let tmpdir = std::env::temp_dir().join(format!("hush-upgrade-{pid}"));
+    std::fs::create_dir_all(&tmpdir)?;
 
-    println!("Downloading {}...", asset.name);
+    let download_result = run_gh(&[
+        "release", "download", tag_name,
+        "--repo", REPO,
+        "--pattern", &asset_name,
+        "--dir", tmpdir.to_str().ok_or("tempdir path is not valid UTF-8")?,
+        "--clobber",
+    ])
+    .await;
 
-    let bytes = client
-        .get(&asset.browser_download_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+    if let Err(e) = download_result {
+        let _ = std::fs::remove_dir_all(&tmpdir);
+        return Err(format!("download failed: {e}").into());
+    }
+
+    // Extract and atomically replace binaries.
+    let tarball = std::fs::File::open(tmpdir.join(&asset_name))?;
+    let decoder = flate2::read::GzDecoder::new(tarball);
+    let mut archive = tar::Archive::new(decoder);
 
     let cur_exe = std::env::current_exe()?;
     let bin_dir = cur_exe
         .parent()
-        .ok_or("Cannot determine binary directory")?;
-
-    let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes));
-    let mut archive = tar::Archive::new(decoder);
+        .ok_or("cannot determine binary directory")?;
 
     let mut updated: Vec<String> = Vec::new();
 
@@ -105,23 +105,20 @@ async fn do_upgrade() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             f.flush()?;
         }
 
-        // Mark executable
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
         }
 
-        // Atomic replace — works on same filesystem, which bin_dir guarantees
         std::fs::rename(&tmp, &dest)?;
         updated.push(dest.display().to_string());
     }
 
+    let _ = std::fs::remove_dir_all(&tmpdir);
+
     if updated.is_empty() {
-        return Err(format!(
-            "Archive contained no recognised binaries (expected 'hush' and/or 'hush-hook')"
-        )
-        .into());
+        return Err("archive contained no recognised binaries (expected 'hush' and/or 'hush-hook')".into());
     }
 
     for path in &updated {
@@ -129,4 +126,24 @@ async fn do_upgrade() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     println!("Upgraded to v{latest}. Restart hush to apply.");
     Ok(())
+}
+
+/// Run a `gh` subcommand, return stdout on success or stderr-enriched error on failure.
+async fn run_gh(args: &[&str]) -> Result<String, String> {
+    let out = tokio::process::Command::new("gh")
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| format!("failed to spawn gh: {e}"))?;
+
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("gh exited with status {}", out.status)
+        } else {
+            stderr
+        })
+    }
 }
