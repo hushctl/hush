@@ -63,7 +63,6 @@ async fn do_upgrade() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "--repo", REPO,
         "--pattern", &asset_name,
         "--dir", tmpdir.to_str().ok_or("tempdir path is not valid UTF-8")?,
-        "--clobber",
     ])
     .await;
 
