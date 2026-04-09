@@ -39,13 +39,14 @@ export function ShellPane({ worktreeId }: Props) {
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(containerRef.current)
-    fit.fit()
     termRef.current = term
 
-    const cols = term.cols
-    const rows = term.rows
-
-    send(machineId, { type: 'shell_attach', worktree_id: rawWorktreeId, cols, rows })
+    requestAnimationFrame(() => {
+      fit.fit()
+      const cols = term.cols
+      const rows = term.rows
+      send(machineId, { type: 'shell_attach', worktree_id: rawWorktreeId, cols, rows })
+    })
 
     const dataDispose = term.onData(data => {
       send(machineId, { type: 'shell_input', worktree_id: rawWorktreeId, data })
@@ -60,19 +61,21 @@ export function ShellPane({ worktreeId }: Props) {
     })
 
     const ro = new ResizeObserver(() => {
-      try {
-        fit.fit()
-        if (termRef.current) {
-          send(machineId, {
-            type: 'shell_resize',
-            worktree_id: rawWorktreeId,
-            cols: termRef.current.cols,
-            rows: termRef.current.rows,
-          })
+      requestAnimationFrame(() => {
+        try {
+          fit.fit()
+          if (termRef.current) {
+            send(machineId, {
+              type: 'shell_resize',
+              worktree_id: rawWorktreeId,
+              cols: termRef.current.cols,
+              rows: termRef.current.rows,
+            })
+          }
+        } catch {
+          // Container not measurable yet — ignore.
         }
-      } catch {
-        // Container not measurable yet — ignore.
-      }
+      })
     })
     ro.observe(containerRef.current)
 
@@ -90,8 +93,7 @@ export function ShellPane({ worktreeId }: Props) {
     <div
       ref={containerRef}
       data-testid={`shell-pane-${worktreeId}`}
-      className="w-full h-full"
-      style={{ background: '#0a0a0a' }}
+      style={{ position: 'absolute', inset: 0, background: '#0a0a0a' }}
     />
   )
 }

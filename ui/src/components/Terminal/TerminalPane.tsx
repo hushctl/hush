@@ -40,14 +40,16 @@ export function TerminalPane({ worktreeId }: Props) {
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(containerRef.current)
-    fit.fit()
     termRef.current = term
     fitRef.current = fit
 
-    const cols = term.cols
-    const rows = term.rows
-
-    send(machineId, { type: 'pty_attach', worktree_id: rawWorktreeId, cols, rows })
+    // Defer initial fit so the absolutely-positioned container has its layout
+    requestAnimationFrame(() => {
+      fit.fit()
+      const cols = term.cols
+      const rows = term.rows
+      send(machineId, { type: 'pty_attach', worktree_id: rawWorktreeId, cols, rows })
+    })
 
     // Intercept shift+Enter before xterm maps it to \r (same as plain Enter).
     // Claude Code's multi-line input distinguishes soft newlines via \n (0x0a).
@@ -73,21 +75,23 @@ export function TerminalPane({ worktreeId }: Props) {
       }
     })
 
-    // Resize on container resize
+    // Resize on container resize — rAF ensures layout is complete before fitting
     const ro = new ResizeObserver(() => {
-      try {
-        fit.fit()
-        if (termRef.current) {
-          send(machineId, {
-            type: 'pty_resize',
-            worktree_id: rawWorktreeId,
-            cols: termRef.current.cols,
-            rows: termRef.current.rows,
-          })
+      requestAnimationFrame(() => {
+        try {
+          fit.fit()
+          if (termRef.current) {
+            send(machineId, {
+              type: 'pty_resize',
+              worktree_id: rawWorktreeId,
+              cols: termRef.current.cols,
+              rows: termRef.current.rows,
+            })
+          }
+        } catch {
+          // Container not measurable yet — ignore.
         }
-      } catch {
-        // Container not measurable yet — ignore.
-      }
+      })
     })
     ro.observe(containerRef.current)
 
@@ -107,8 +111,7 @@ export function TerminalPane({ worktreeId }: Props) {
     <div
       ref={containerRef}
       data-testid={`terminal-pane-${worktreeId}`}
-      className="w-full h-full"
-      style={{ background: '#0a0a0a' }}
+      style={{ position: 'absolute', inset: 0, background: '#0a0a0a' }}
     />
   )
 }

@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { useStore } from '@/store'
 import { PanelFrame } from './PanelFrame'
+import { CanvasConnectors } from './CanvasConnectors'
 
 export function Canvas() {
   const panels = useStore(s => s.canvas.panels)
@@ -8,6 +9,8 @@ export function Canvas() {
 
   return (
     <div ref={containerRef} className="absolute inset-0 overflow-hidden bg-background">
+      {/* Connectors sit below panels */}
+      <CanvasConnectors />
       {panels.map(panel => (
         <PanelFrame key={panel.id} panel={panel} />
       ))}

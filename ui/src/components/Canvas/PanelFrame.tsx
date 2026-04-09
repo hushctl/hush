@@ -182,8 +182,8 @@ export function PanelFrame({ panel }: Props) {
         </div>
       </div>
 
-      {/* Body */}
-      <div className="flex-1 overflow-hidden min-h-0">
+      {/* Body — position:relative so absolute-inset terminal fills it correctly */}
+      <div className="flex-1 overflow-hidden min-h-0 relative">
         {panel.kind === 'terminal' && <TerminalPane worktreeId={panel.targetId} />}
         {panel.kind === 'shell' && <ShellPane worktreeId={panel.targetId} />}
         {panel.kind === 'file_rail' && <FileRail worktreeId={panel.targetId} className="h-full" />}

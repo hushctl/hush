@@ -466,6 +466,16 @@ async fn handle_client_message(
                 return;
             }
 
+            if canonical_file.is_dir() {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: format!("Cannot open: {path} is a directory"),
+                    worktree_id: Some(worktree_id),
+                });
+                return;
+            }
+
             const MAX_BYTES: usize = 256 * 1024;
             match tokio::fs::read(&canonical_file).await {
                 Ok(bytes) => {

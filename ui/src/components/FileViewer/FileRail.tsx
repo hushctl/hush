@@ -95,8 +95,9 @@ export function FileRail({ worktreeId, className = '' }: Props) {
                 {files.map(file => (
                   <button
                     key={file}
-                    className="w-full flex items-center gap-1.5 px-2 py-0.5 hover:bg-muted text-left transition-colors"
-                    onClick={() => openFile(file)}
+                    className="w-full flex items-center gap-1.5 px-2 py-0.5 hover:bg-muted text-left transition-colors disabled:opacity-50 disabled:cursor-default"
+                    onClick={() => !file.endsWith('/') && openFile(file)}
+                    disabled={file.endsWith('/')}
                     title={file}
                   >
                     <span
