@@ -15,8 +15,10 @@ export function TopBar() {
   const switchToGrid = useStore(s => s.switchToGrid)
 
   function handleTidy() {
-    // TopBar is h-10 (40px); canvas fills the rest
-    arrangePanels(window.innerWidth, window.innerHeight - 40)
+    const canvasEl = document.querySelector('[data-canvas-area]')
+    const w = canvasEl ? canvasEl.clientWidth : window.innerWidth
+    const h = canvasEl ? canvasEl.clientHeight : window.innerHeight - 40
+    arrangePanels(w, h)
   }
   const daemons = useStore(s => s.daemons)
   const daemonList = Object.values(daemons)

@@ -13,5 +13,8 @@ export default defineConfig({
   server: {
     // Browser connects directly to daemon WebSocket URLs — no proxy needed.
     // Default daemon: ws://localhost:9111/ws
+    watch: {
+      usePolling: true,
+    },
   },
 })

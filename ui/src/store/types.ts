@@ -55,6 +55,8 @@ export interface AppState {
   // ── UI state ─────────────────────────────────────────────────────────────
   layoutMode: 'grid' | 'canvas'
   canvas: CanvasState
+  /** Measured size of the canvas container (excludes TopBar + CommandBar). Not persisted. */
+  canvasSize: { w: number; h: number }
   /** Recency list of open terminal worktree IDs — used by cmd+P and status tracking */
   activePanes: string[]
   selectedWorktreeId: string | null
@@ -106,6 +108,7 @@ export interface AppState {
   resizePanel: (id: string, width: number, height: number) => void
   focusPanel: (id: string) => void
   arrangePanels: (canvasW: number, canvasH: number) => void
+  setCanvasSize: (w: number, h: number) => void
   openPane: (worktreeId: string) => void
   closePane: (worktreeId: string) => void
   setTileMode: (mode: '1-up' | '2-up') => void

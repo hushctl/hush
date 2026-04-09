@@ -5,7 +5,7 @@ export function TilingContainer() {
   return (
     <div className="flex flex-col h-full">
       <TopBar />
-      <div className="flex-1 relative overflow-hidden">
+      <div data-canvas-area className="flex-1 relative overflow-hidden">
         <Canvas />
       </div>
     </div>

@@ -44,6 +44,7 @@ export const useStore = create<AppState>()(
       // ── UI state ───────────────────────────────────────────────────────────
       layoutMode: 'grid',
       canvas: { panels: [], nextZ: 0 },
+      canvasSize: { w: 0, h: 0 },
       activePanes: [],
       selectedWorktreeId: null,
       selectedProjectId: null,
@@ -322,14 +323,19 @@ export const useStore = create<AppState>()(
         const n = state.canvas.panels.length
         const { width, height } = PANEL_DEFAULTS[kind]
         const z = state.canvas.nextZ
+        const { w: cw, h: ch } = state.canvasSize
+        const pw = cw > 0 ? Math.min(width, cw) : width
+        const ph = ch > 0 ? Math.min(height, ch) : height
+        const rawX = Math.round((40 + 30 * (n % 10)) / 8) * 8
+        const rawY = Math.round((40 + 30 * (n % 10)) / 8) * 8
         const newPanel: Panel = {
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           kind,
           targetId,
-          x: Math.round((40 + 30 * (n % 10)) / 8) * 8,
-          y: Math.round((40 + 30 * (n % 10)) / 8) * 8,
-          width,
-          height,
+          x: cw > 0 ? Math.min(rawX, cw - pw) : rawX,
+          y: ch > 0 ? Math.min(rawY, ch - ph) : rawY,
+          width: pw,
+          height: ph,
           z,
         }
         const newActivePanes = kind === 'terminal'
@@ -452,6 +458,19 @@ export const useStore = create<AppState>()(
         }
 
         set({ canvas: { ...state.canvas, panels: arranged } })
+      },
+
+      setCanvasSize: (w, h) => {
+        if (w === 0 || h === 0) return
+        // Clamp all persisted panel positions to fit within the actual canvas bounds.
+        const panels = get().canvas.panels.map(p => {
+          const clampedH = Math.min(p.height, h)
+          const clampedW = Math.min(p.width, w)
+          const clampedY = Math.min(p.y, h - clampedH)
+          const clampedX = Math.min(p.x, w - clampedW)
+          return { ...p, x: Math.max(0, clampedX), y: Math.max(0, clampedY), width: clampedW, height: clampedH }
+        })
+        set({ canvasSize: { w, h }, canvas: { ...get().canvas, panels } })
       },
 
       openPane: (worktreeId) => {

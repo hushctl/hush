@@ -1,11 +1,23 @@
-import { useRef } from 'react'
+import { useRef, useEffect } from 'react'
 import { useStore } from '@/store'
 import { PanelFrame } from './PanelFrame'
 import { CanvasConnectors } from './CanvasConnectors'
 
 export function Canvas() {
   const panels = useStore(s => s.canvas.panels)
+  const setCanvasSize = useStore(s => s.setCanvasSize)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect
+      setCanvasSize(Math.floor(width), Math.floor(height))
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [setCanvasSize])
 
   return (
     <div ref={containerRef} className="absolute inset-0 overflow-hidden bg-background">
