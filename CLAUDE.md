@@ -1,5 +1,9 @@
 # Claude Code Mission Control
 
+## Setup
+
+Run `make hooks` once after cloning to install the pre-commit build check.
+
 ## What this is
 
 A browser-based multi-project command center for Claude Code. Instead of switching between iTerm tabs, you manage all your active Claude Code sessions from a single spatial interface — accessible from any device.

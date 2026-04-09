@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+STAGED=$(git diff --cached --name-only)
+
+check_daemon=0
+check_ui=0
+
+while IFS= read -r f; do
+  case "$f" in
+    daemon/*) check_daemon=1 ;;
+    ui/src/*|ui/package.json|ui/tsconfig*) check_ui=1 ;;
+  esac
+done <<< "$STAGED"
+
+if [[ $check_daemon -eq 0 && $check_ui -eq 0 ]]; then
+  exit 0
+fi
+
+pids=()
+fail=0
+tmpdir=$(mktemp -d)
+
+if [[ $check_daemon -eq 1 ]]; then
+  echo "→ cargo check (daemon)..."
+  (cd "$REPO_ROOT/daemon" && cargo check --all-targets 2>&1) > "$tmpdir/daemon.log" &
+  pids+=($!)
+fi
+
+if [[ $check_ui -eq 1 ]]; then
+  echo "→ tsc --noEmit (ui)..."
+  (cd "$REPO_ROOT/ui" && node_modules/.bin/tsc --noEmit 2>&1) > "$tmpdir/ui.log" &
+  pids+=($!)
+fi
+
+for pid in "${pids[@]}"; do
+  wait "$pid" || fail=1
+done
+
+# Print any output
+[[ -f "$tmpdir/daemon.log" ]] && cat "$tmpdir/daemon.log"
+[[ -f "$tmpdir/ui.log" ]] && cat "$tmpdir/ui.log"
+rm -rf "$tmpdir"
+
+if [[ $fail -ne 0 ]]; then
+  echo ""
+  echo "✗ Pre-commit checks failed. Fix the errors above, or use --no-verify to skip."
+  exit 1
+fi
+
+echo "✓ Pre-commit checks passed."
