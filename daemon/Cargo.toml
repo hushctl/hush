@@ -30,7 +30,7 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls-pemfile = "2"
 rcgen = "0.13"
 sha2 = "0.10"
-native-tls = "0.2"
+native-tls = { version = "0.2", features = ["vendored"] }
 if-addrs = "0.13"
 rustls = { version = "0.23", features = ["ring"] }
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
