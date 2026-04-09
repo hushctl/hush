@@ -1,6 +1,7 @@
 mod git_watcher;
 mod gossip;
 mod hooks;
+mod memory_monitor;
 mod protocol;
 mod pty;
 mod state;
@@ -245,6 +246,9 @@ async fn main() {
 
     // Gossip task — runs every 30s, dials known peers
     gossip::spawn_gossip(Arc::clone(&daemon_state), state_path.clone());
+
+    // Memory pressure monitor — polls system memory every 15s, alerts on transitions
+    memory_monitor::spawn(machine_id.clone(), tx.clone());
 
     let app_state = AppState {
         daemon_state,

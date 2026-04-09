@@ -67,6 +67,8 @@ export interface AppState {
   daemonError: string | null
   // Set when the daemon reports the project path doesn't exist — triggers the "create dir?" prompt
   pendingCreate: { path: string; name: string; machineId: string } | null
+  // Per-machine memory pressure alerts — keyed by machine_id, cleared on level: "normal"
+  memoryAlerts: Record<string, { level: 'warning' | 'critical'; availableBytes: number; totalBytes: number }>
 
   // ── File viewer state ─────────────────────────────────────────────────────
   /** Live git status per namespaced worktree id */

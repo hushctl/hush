@@ -6,6 +6,7 @@ import { splitKey } from '@/store'
 import { DotGrid } from '@/components/DotGrid/DotGrid'
 import { TilingContainer } from '@/components/Layout/TilingContainer'
 import { CommandBar } from '@/components/Layout/CommandBar'
+import { MemoryBanner } from '@/components/Layout/MemoryBanner'
 import { QuickOpen } from '@/components/FileViewer/QuickOpen'
 
 function DisconnectedScreen() {
@@ -58,6 +59,7 @@ function AppInner() {
   if (!connected) {
     return (
       <div className="flex flex-col w-full h-full">
+        <MemoryBanner />
         <main className="flex-1 overflow-hidden">
           <DisconnectedScreen />
         </main>
@@ -68,6 +70,7 @@ function AppInner() {
 
   return (
     <div className="flex flex-col w-full h-full">
+      <MemoryBanner />
       <main className="flex-1 overflow-hidden relative">
         {/* Grid — conditional render is fine, DotGrid has no xterm instances */}
         {layoutMode === 'grid' && (

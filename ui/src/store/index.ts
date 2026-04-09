@@ -51,6 +51,7 @@ export const useStore = create<AppState>()(
       tileMode: '1-up',
       daemonError: null,
       pendingCreate: null,
+      memoryAlerts: {},
 
       // ── File viewer state ──────────────────────────────────────────────────
       gitStatus: {},
@@ -239,6 +240,23 @@ export const useStore = create<AppState>()(
           case 'error': {
             console.error('[daemon error]', msg.message, msg.worktree_id)
             set({ daemonError: msg.message })
+            break
+          }
+
+          case 'memory_pressure': {
+            set(state => {
+              const next = { ...state.memoryAlerts }
+              if (msg.level === 'normal') {
+                delete next[msg.machine_id]
+              } else {
+                next[msg.machine_id] = {
+                  level: msg.level,
+                  availableBytes: msg.available_bytes,
+                  totalBytes: msg.total_bytes,
+                }
+              }
+              return { memoryAlerts: next }
+            })
             break
           }
 

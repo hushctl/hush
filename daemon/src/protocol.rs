@@ -143,6 +143,14 @@ pub enum ServerMessage {
         message: String,
         worktree_id: Option<String>,
     },
+    /// System memory pressure level changed. Only sent on transitions between levels.
+    MemoryPressure {
+        machine_id: String,
+        /// "normal" | "warning" | "critical"
+        level: String,
+        available_bytes: u64,
+        total_bytes: u64,
+    },
     /// Sent when RegisterProject path does not exist on this machine.
     /// Browser should ask the user if they want to create it.
     PathNotFound {

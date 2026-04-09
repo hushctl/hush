@@ -70,3 +70,4 @@ export type ServerMessage =
   | { type: 'shell_data'; machine_id: string; worktree_id: string; data: string }
   | { type: 'shell_scrollback'; machine_id: string; worktree_id: string; data: string }
   | { type: 'shell_exit'; machine_id: string; worktree_id: string; code: number | null }
+  | { type: 'memory_pressure'; machine_id: string; level: 'normal' | 'warning' | 'critical'; available_bytes: number; total_bytes: number }
