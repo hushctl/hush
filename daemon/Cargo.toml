@@ -31,4 +31,5 @@ rustls-pemfile = "2"
 rcgen = "0.13"
 sha2 = "0.10"
 native-tls = "0.2"
+rustls = { version = "0.23", features = ["ring"] }
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
