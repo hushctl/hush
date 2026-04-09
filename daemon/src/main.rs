@@ -4,6 +4,7 @@ mod hooks;
 mod protocol;
 mod pty;
 mod state;
+mod upgrade;
 mod ws;
 
 use std::path::PathBuf;
@@ -23,9 +24,18 @@ use crate::protocol::ServerMessage;
 use crate::pty::PtyManager;
 use crate::state::{DaemonState, PeerInfo};
 
+#[derive(clap::Subcommand)]
+enum SubCommand {
+    /// Upgrade hush to the latest GitHub release
+    Upgrade,
+}
+
 #[derive(Parser)]
-#[command(name = "hush", about = "Hush Daemon")]
+#[command(name = "hush", about = "Hush Daemon", version)]
 struct Args {
+    #[command(subcommand)]
+    command: Option<SubCommand>,
+
     /// Port to listen on
     #[arg(short, long, default_value_t = 9111)]
     port: u16,
@@ -74,6 +84,11 @@ async fn main() {
         .init();
 
     let args = Args::parse();
+
+    if let Some(SubCommand::Upgrade) = args.command {
+        upgrade::run().await;
+        return;
+    }
 
     let state_path = args.state_file.unwrap_or_else(|| {
         let home = dirs::home_dir().expect("Could not determine home directory");
