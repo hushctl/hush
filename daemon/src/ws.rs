@@ -295,7 +295,8 @@ async fn handle_client_message(
                 }
             };
 
-            // Spawn pty if needed
+            // Spawn pty if needed — use --continue (not --resume) so a missing
+            // session file doesn't break reconnects or daemon restarts.
             if !pty_manager.exists(&worktree_id).await {
                 let has_session = session_id.is_some();
                 if let Err(e) = pty_manager
@@ -303,7 +304,7 @@ async fn handle_client_message(
                         worktree_id.clone(),
                         &working_dir,
                         &permission_mode,
-                        session_id.as_deref(),
+                        None, // --continue, not --resume
                         has_session,
                         cols,
                         rows,
@@ -354,7 +355,7 @@ async fn handle_client_message(
                 if let Some((working_dir, permission_mode, session_id)) = info {
                     let has_session = session_id.is_some();
                     let _ = pty_manager
-                        .spawn(worktree_id.clone(), &working_dir, &permission_mode, session_id.as_deref(), has_session, 80, 24)
+                        .spawn(worktree_id.clone(), &working_dir, &permission_mode, None, has_session, 80, 24)
                         .await;
                 }
             }
