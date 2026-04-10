@@ -97,6 +97,7 @@ Intent options:
 - {"kind":"show_needs_me"} — show what needs attention
 - {"kind":"tree","target":"<name>"} — open project file tree
 - {"kind":"new_worktree","branch":"<branch>","project":"<name>"} — create git worktree
+- {"kind":"delete_worktree","target":"<name>"} — delete/remove a worktree
 - {"kind":"inspect_daemon","target":"<name>"} — view daemon details
 - {"kind":"unknown"} — cannot classify
 

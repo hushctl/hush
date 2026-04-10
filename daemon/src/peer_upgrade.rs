@@ -369,6 +369,35 @@ pub async fn apply_upgrade(
             info!("Upgraded to v{version}. Restarting...");
             // Brief pause so the UpgradeComplete message reaches the source before we exit.
             tokio::time::sleep(Duration::from_secs(2)).await;
+
+            // If binaries were written to a fallback directory (e.g. ~/.hush/bin)
+            // rather than next to the current exe, exec the new binary directly so
+            // the process restarts from the new location without requiring launchd
+            // to know about the fallback path.
+            let cur_exe = std::env::current_exe().ok();
+            let new_hush = updated.iter().find(|p| {
+                let p = std::path::Path::new(p.as_str());
+                p.file_name().map(|n| n == "hush").unwrap_or(false)
+            });
+            if let (Some(cur), Some(new_path)) = (cur_exe, new_hush) {
+                if std::path::Path::new(new_path.as_str()) != cur {
+                    info!("Upgrade {upgrade_id}: binary moved to {new_path}, exec'ing new binary");
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::CommandExt;
+                        let saved_args = crate::DAEMON_ARGS.get()
+                            .map(|a| a.as_slice())
+                            .unwrap_or(&[]);
+                        // argv[0] = new path, rest = original args (skip old argv[0])
+                        let err = std::process::Command::new(new_path)
+                            .args(saved_args.iter().skip(1))
+                            .exec();
+                        warn!("Upgrade {upgrade_id}: exec failed: {err}");
+                    }
+                    // Fallthrough to plain exit if exec failed or non-Unix
+                }
+            }
+
             std::process::exit(0);
         }
         Ok(Err(e)) => {

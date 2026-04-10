@@ -309,6 +309,13 @@ impl PtyManager {
         for (key, value) in std::env::vars() {
             cmd.env(key, value);
         }
+        // Tell Claude Code that this terminal supports the kitty keyboard
+        // protocol. Our xterm.js frontend intercepts Shift+Enter and sends
+        // the kitty sequence (\x1b[13;2u), which Claude uses for multi-line
+        // input. Without this env var Claude falls back to standard mode
+        // where Shift+Enter is indistinguishable from Enter.
+        cmd.env("TERM_PROGRAM", "vscode");
+
         // Inject hook env vars — hush-hook reads these to know where to send
         // events and which worktree they belong to.
         cmd.env("HUSH_WORKTREE_ID", &worktree_id);

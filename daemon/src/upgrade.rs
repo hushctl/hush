@@ -6,6 +6,8 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Extract a hush release tar.gz and atomically replace the `hush` and
 /// `hush-hook` binaries next to the running executable.
+/// If the binary directory is not writable (e.g. `/usr/local/bin`), falls back
+/// to `~/.hush/bin/` so the upgrade can succeed without root.
 /// Returns the list of binary paths that were updated.
 pub fn apply_archive(tarball_path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
     let tarball = std::fs::File::open(tarball_path)?;
@@ -13,7 +15,21 @@ pub fn apply_archive(tarball_path: &Path) -> Result<Vec<String>, Box<dyn std::er
     let mut archive = tar::Archive::new(decoder);
 
     let cur_exe = std::env::current_exe()?;
-    let bin_dir = cur_exe.parent().ok_or("cannot determine binary directory")?;
+    let cur_bin_dir = cur_exe.parent().ok_or("cannot determine binary directory")?;
+
+    // If the binary directory is not writable (system install), fall back to
+    // ~/.hush/bin/ so an unprivileged daemon can still replace itself.
+    let fallback_bin_dir;
+    let bin_dir: &Path = if is_dir_writable(cur_bin_dir) {
+        cur_bin_dir
+    } else {
+        fallback_bin_dir = dirs::home_dir()
+            .ok_or("cannot determine home directory")?
+            .join(".hush")
+            .join("bin");
+        std::fs::create_dir_all(&fallback_bin_dir)?;
+        &fallback_bin_dir
+    };
 
     let mut updated: Vec<String> = Vec::new();
 
@@ -53,6 +69,14 @@ pub fn apply_archive(tarball_path: &Path) -> Result<Vec<String>, Box<dyn std::er
     }
 
     Ok(updated)
+}
+
+fn is_dir_writable(dir: &Path) -> bool {
+    let probe = dir.join(".hush_write_probe");
+    match std::fs::File::create(&probe) {
+        Ok(_) => { let _ = std::fs::remove_file(&probe); true }
+        Err(_) => false,
+    }
 }
 
 pub async fn run() {

@@ -28,7 +28,7 @@ export function CommandBar() {
   const [setupData, setSetupData] = useState({
     projectPath: '', projectName: '', branch: '',
     daemonUrl: 'wss://localhost:9111/ws', daemonName: '',
-    machineId: '', permissionMode: 'plan',
+    machineId: '', permissionMode: 'dangerously-skip-permissions',
   })
 
   const send = useStore(s => s.send)
@@ -135,6 +135,15 @@ export function CommandBar() {
         return { ok: true }
       }
 
+      case 'delete_worktree': {
+        const [mid, rawWtId] = splitKey(intent.worktreeId)
+        send(mid || targetMachineId(), {
+          type: 'remove_worktree',
+          worktree_id: rawWtId || intent.worktreeId,
+        })
+        return { ok: true }
+      }
+
       case 'inspect_daemon':
         openDaemonDetail(intent.machineId)
         return { ok: true }
@@ -185,7 +194,7 @@ export function CommandBar() {
     })
     setShowSetup(false)
     setSetupStep(null)
-    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'wss://localhost:9111/ws', daemonName: '', machineId: '', permissionMode: 'plan' })
+    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'wss://localhost:9111/ws', daemonName: '', machineId: '', permissionMode: 'dangerously-skip-permissions' })
   }
 
   function handleAddDaemon() {
@@ -200,7 +209,7 @@ export function CommandBar() {
     })
     setShowSetup(false)
     setSetupStep(null)
-    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'wss://localhost:9111/ws', daemonName: '', machineId: '', permissionMode: 'plan' })
+    setSetupData({ projectPath: '', projectName: '', branch: '', daemonUrl: 'wss://localhost:9111/ws', daemonName: '', machineId: '', permissionMode: 'dangerously-skip-permissions' })
   }
 
   const placeholder =

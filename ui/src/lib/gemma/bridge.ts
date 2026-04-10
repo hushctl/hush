@@ -17,6 +17,7 @@ export type GemmaResult =
   | { kind: 'show_needs_me' }
   | { kind: 'tree'; target: string }
   | { kind: 'new_worktree'; branch: string; project: string }
+  | { kind: 'delete_worktree'; target: string }
   | { kind: 'inspect_daemon'; target: string }
   | { kind: 'unknown'; reason: string }
 
@@ -98,6 +99,7 @@ function parseRaw(raw: string): GemmaResult {
     case 'close':         return { kind: 'close', target: parsed.target ?? '' }
     case 'tree':          return { kind: 'tree', target: parsed.target ?? '' }
     case 'new_worktree':  return { kind: 'new_worktree', branch: parsed.branch ?? '', project: parsed.project ?? '' }
+    case 'delete_worktree': return { kind: 'delete_worktree', target: parsed.target ?? '' }
     case 'inspect_daemon':return { kind: 'inspect_daemon', target: parsed.target ?? '' }
     default:              return { kind: 'unknown', reason: `unknown kind: ${parsed.kind}` }
   }

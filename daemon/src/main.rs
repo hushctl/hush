@@ -14,7 +14,11 @@ mod upgrade;
 mod ws;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+/// Original argv, saved at startup so the upgrade path can exec the new binary
+/// with the same arguments after replacing itself.
+pub static DAEMON_ARGS: OnceLock<Vec<String>> = OnceLock::new();
 
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::State as AxumState;
@@ -127,6 +131,9 @@ async fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    // Save argv before parsing so the upgrade path can re-exec with the same args.
+    let _ = DAEMON_ARGS.set(std::env::args().collect());
 
     let args = Args::parse();
 

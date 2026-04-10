@@ -175,7 +175,7 @@ pub enum ClientMessage {
 }
 
 fn default_permission_mode() -> String {
-    "default".to_string()
+    "dangerously-skip-permissions".to_string()
 }
 
 /// Messages sent from daemon → browser/wscat

@@ -9,6 +9,7 @@
 //   show me what needs me / show me what needs attention
 //   tree <project>
 //   new worktree <branch>[ in <project>]
+//   delete worktree <branch|project/branch>
 
 import type { ProjectInfo, WorktreeInfo } from './protocol'
 import type { DaemonConfig } from '@/store/types'
@@ -22,6 +23,7 @@ export type IntentResult =
   | { kind: 'show_needs_me' }
   | { kind: 'tree'; projectId: string }
   | { kind: 'new_worktree'; projectId: string; branch: string }
+  | { kind: 'delete_worktree'; worktreeId: string }
   | { kind: 'inspect_daemon'; machineId: string }
   | { kind: 'move_worktree'; worktreeId: string; destMachineId: string }
   | { kind: 'move_project'; projectId: string; destMachineId: string }
@@ -89,6 +91,14 @@ export function parseIntent(input: string, ctx: IntentContext): IntentResult {
       : Object.values(ctx.projects).at(-1) ?? null
     if (!project) return { kind: 'unknown', reason: 'no project to create worktree in' }
     return { kind: 'new_worktree', projectId: project.id, branch }
+  }
+
+  // delete worktree <branch|project/branch>
+  if (text.startsWith('delete worktree ') || text.startsWith('remove worktree ')) {
+    const target = text.replace(/^(delete|remove) worktree\s+/, '')
+    const wt = resolveWorktreeRef(target, ctx)
+    if (!wt) return { kind: 'unknown', reason: `no worktree matching "${target}"` }
+    return { kind: 'delete_worktree', worktreeId: wt.id }
   }
 
   // move <project>[/<branch>] to <machine>
@@ -251,6 +261,12 @@ export function resolveGemmaResult(r: GemmaResult, ctx: IntentContext): IntentRe
       if (!proj) return { kind: 'unknown', reason: 'no project to create worktree in' }
       if (!r.branch) return { kind: 'unknown', reason: 'missing branch name' }
       return { kind: 'new_worktree', projectId: proj.id, branch: r.branch }
+    }
+
+    case 'delete_worktree': {
+      const wt = resolveWorktreeRef(r.target, ctx)
+      if (!wt) return { kind: 'unknown', reason: `no worktree matching "${r.target}"` }
+      return { kind: 'delete_worktree', worktreeId: wt.id }
     }
 
     case 'inspect_daemon': {
