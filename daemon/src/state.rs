@@ -15,6 +15,9 @@ pub struct PeerInfo {
     /// Unix timestamp of the last successful contact (seconds).
     #[serde(default)]
     pub last_seen: u64,
+    /// Daemon version string (e.g. "0.9.1"). Empty for pre-version peers.
+    #[serde(default)]
+    pub version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -10,6 +10,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 
 use crate::git_watcher::{run_git_status, GitWatcher};
+use crate::peer_upgrade::{self as pu, InboundUpgrade, InboundUpgrades};
 use crate::protocol::{ClientMessage, ServerMessage};
 use crate::pty::PtyManager;
 use crate::state::{DaemonState, PeerInfo};
@@ -23,6 +24,7 @@ pub async fn handle_socket(
     pty_manager: PtyManager,
     git_watcher: GitWatcher,
     inbound_transfers: InboundTransfers,
+    inbound_upgrades: InboundUpgrades,
 ) {
     let mut rx = tx.subscribe();
     let (mut sink, mut stream) = socket.split();
@@ -51,17 +53,25 @@ pub async fn handle_socket(
         }
     });
 
-    // Per-connection active transfer ID — binary frames go to this transfer's file.
-    // At most one in-flight inbound transfer per WS connection (each source
-    // opens a dedicated WS for every transfer it initiates).
+    // Per-connection active IDs — binary frames are routed to whichever is set.
+    // At most one in-flight inbound transfer/upgrade per WS connection.
     let mut active_transfer_id: Option<String> = None;
+    let mut active_upgrade_id: Option<String> = None;
 
     // Reader loop: receive ClientMessage from WebSocket, dispatch
     while let Some(msg) = stream.next().await {
         match msg {
             Ok(Message::Binary(bytes)) => {
-                // Raw tar bytes from source — append to the active transfer's temp file.
-                if let Some(ref tid) = active_transfer_id {
+                if let Some(ref uid) = active_upgrade_id {
+                    // Binary frames for an inbound upgrade.
+                    let mut map = inbound_upgrades.lock().await;
+                    if let Some(u) = map.get_mut(uid.as_str()) {
+                        u.write_bytes(&bytes);
+                    } else {
+                        warn!("Binary frame for unknown upgrade {uid}");
+                    }
+                } else if let Some(ref tid) = active_transfer_id {
+                    // Raw tar bytes from source — append to the active transfer's temp file.
                     let mut map = inbound_transfers.lock().await;
                     if let Some(t) = map.get_mut(tid.as_str()) {
                         t.write_bytes(&bytes);
@@ -69,14 +79,13 @@ pub async fn handle_socket(
                         warn!("Binary frame for unknown transfer {tid}");
                     }
                 } else {
-                    warn!("Binary frame with no active transfer — ignoring");
+                    warn!("Binary frame with no active transfer or upgrade — ignoring");
                 }
                 continue;
             }
             Ok(Message::Close(_)) | Err(_) => break,
             Ok(Message::Text(t)) => {
-                // Peek at the transfer_id before full dispatch so we can track
-                // which transfer is active for binary-frame routing.
+                // Peek at IDs before full dispatch so we can track routing state.
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) {
                     match v.get("type").and_then(|t| t.as_str()) {
                         Some("transfer_offer") => {
@@ -86,9 +95,16 @@ pub async fn handle_socket(
                                 .map(String::from);
                         }
                         Some("transfer_commit") | Some("transfer_abort") => {
-                            // Clear after the message is handled (apply spawned).
-                            // The source closes the WS after commit anyway.
                             active_transfer_id = None;
+                        }
+                        Some("upgrade_offer") => {
+                            active_upgrade_id = v
+                                .get("upgrade_id")
+                                .and_then(|id| id.as_str())
+                                .map(String::from);
+                        }
+                        Some("upgrade_commit") => {
+                            active_upgrade_id = None;
                         }
                         _ => {}
                     }
@@ -118,6 +134,7 @@ pub async fn handle_socket(
                     pty_manager.clone(),
                     git_watcher.clone(),
                     Arc::clone(&inbound_transfers),
+                    Arc::clone(&inbound_upgrades),
                 )
                 .await;
             }
@@ -137,6 +154,7 @@ async fn handle_client_message(
     pty_manager: PtyManager,
     git_watcher: GitWatcher,
     inbound_transfers: InboundTransfers,
+    inbound_upgrades: InboundUpgrades,
 ) {
     match msg {
         ClientMessage::RegisterProject { path, name } => {
@@ -374,13 +392,17 @@ async fn handle_client_message(
             cols,
             rows,
         } => {
-            if let Err(e) = pty_manager.resize(&worktree_id, cols, rows).await {
-                let machine_id = state.read().await.machine_id.clone();
-                let _ = tx.send(ServerMessage::Error {
-                    machine_id,
-                    message: e,
-                    worktree_id: Some(worktree_id),
-                });
+            // Silently ignore resize when no pty exists yet — the terminal
+            // pane often resizes before PtyAttach has spawned the process.
+            if pty_manager.exists(&worktree_id).await {
+                if let Err(e) = pty_manager.resize(&worktree_id, cols, rows).await {
+                    let machine_id = state.read().await.machine_id.clone();
+                    let _ = tx.send(ServerMessage::Error {
+                        machine_id,
+                        message: e,
+                        worktree_id: Some(worktree_id),
+                    });
+                }
             }
         }
 
@@ -663,7 +685,11 @@ async fn handle_client_message(
                 let s = state.read().await;
                 (s.machine_id.clone(), s.known_peers())
             };
-            let _ = tx.send(ServerMessage::PeerList { machine_id, peers });
+            let _ = tx.send(ServerMessage::PeerList {
+                machine_id,
+                peers,
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            });
         }
 
         // ── Worktree removal ─────────────────────────────────────────────────
@@ -826,7 +852,8 @@ async fn handle_client_message(
             let machine_id = state.read().await.machine_id.clone();
 
             let hint = PathBuf::from(&project_path_hint);
-            let dest_path = match transfer::resolve_dest_path(&hint, &branch) {
+            let hush_dir = state_path.parent().unwrap_or(&state_path).to_path_buf();
+            let dest_path = match transfer::resolve_dest_path(&hint, &branch, &hush_dir) {
                 Ok(p) => p,
                 Err(e) => {
                     let _ = tx.send(ServerMessage::TransferError {
@@ -968,10 +995,105 @@ async fn handle_client_message(
             }
         }
 
+        // ── Peer upgrade ─────────────────────────────────────────────────────
+
+        ClientMessage::PeerUpgrade { dest_machine_id } => {
+            // Browser → this (newer) daemon: push our binary to that peer.
+            let (machine_id, peer_url) = {
+                let s = state.read().await;
+                let url = s.peers.iter()
+                    .find(|p| p.machine_id == dest_machine_id)
+                    .map(|p| p.url.clone());
+                (s.machine_id.clone(), url)
+            };
+            let Some(dest_url) = peer_url else {
+                let _ = tx.send(ServerMessage::UpgradeError {
+                    machine_id,
+                    upgrade_id: String::new(),
+                    message: format!("Unknown peer: {dest_machine_id}"),
+                });
+                return;
+            };
+            tokio::spawn(pu::send_upgrade(
+                dest_url, dest_machine_id, machine_id, state_path, tx,
+            ));
+        }
+
+        ClientMessage::UpgradeOffer {
+            upgrade_id,
+            from_machine_id,
+            version,
+            platform,
+            total_bytes,
+        } => {
+            // Source daemon is offering a binary upgrade.
+            let machine_id = state.read().await.machine_id.clone();
+
+            // Reject cross-platform offers.
+            if platform != pu::local_platform() {
+                let _ = tx.send(ServerMessage::UpgradeError {
+                    machine_id,
+                    upgrade_id,
+                    message: format!(
+                        "Platform mismatch: offered {platform}, we are {}",
+                        pu::local_platform()
+                    ),
+                });
+                return;
+            }
+
+            // Create temp file
+            let tmp_path = transfer::transfers_dir(&state_path)
+                .join(format!("{upgrade_id}.tar.gz"));
+            if let Err(e) = std::fs::create_dir_all(tmp_path.parent().unwrap()) {
+                let _ = tx.send(ServerMessage::UpgradeError {
+                    machine_id,
+                    upgrade_id,
+                    message: format!("create tmp dir: {e}"),
+                });
+                return;
+            }
+            let file = match std::fs::File::create(&tmp_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = tx.send(ServerMessage::UpgradeError {
+                        machine_id,
+                        upgrade_id,
+                        message: format!("create tmp file: {e}"),
+                    });
+                    return;
+                }
+            };
+
+            inbound_upgrades.lock().await.insert(upgrade_id.clone(), InboundUpgrade {
+                upgrade_id: upgrade_id.clone(),
+                from_machine_id,
+                version,
+                total_bytes,
+                bytes_received: 0,
+                file: Some(file),
+                temp_path: tmp_path,
+            });
+
+            let _ = tx.send(ServerMessage::UpgradeAck { machine_id, upgrade_id });
+        }
+
+        ClientMessage::UpgradeCommit { upgrade_id } => {
+            // All binary frames received — apply the upgrade.
+            let upgrade = inbound_upgrades.lock().await.remove(&upgrade_id);
+            if let Some(upgrade) = upgrade {
+                let machine_id = state.read().await.machine_id.clone();
+                tokio::spawn(pu::apply_upgrade(upgrade, tx, machine_id));
+            } else {
+                warn!("UpgradeCommit for unknown upgrade {upgrade_id}");
+            }
+        }
+
         ClientMessage::PeerHello {
             machine_id: sender_id,
             url: sender_url,
             peers: sender_peers,
+            version: sender_version,
         } => {
             // Merge sender + their known peers into our state
             {
@@ -984,6 +1106,7 @@ async fn handle_client_message(
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs())
                         .unwrap_or(0),
+                    version: sender_version,
                 });
                 s.merge_peers(sender_peers);
                 s.save(&state_path);
@@ -993,7 +1116,11 @@ async fn handle_client_message(
                 let s = state.read().await;
                 (s.machine_id.clone(), s.known_peers())
             };
-            let _ = tx.send(ServerMessage::PeerList { machine_id, peers });
+            let _ = tx.send(ServerMessage::PeerList {
+                machine_id,
+                peers,
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            });
         }
     }
 }
@@ -1040,15 +1167,35 @@ async fn resolve_worktree_dir(project_path: &Path, branch: &str) -> Result<PathB
         return Ok(worktree_path);
     }
 
+    // Try checking out an existing branch first; if the ref doesn't exist yet,
+    // create a new branch from HEAD with -b.
     let output = tokio::process::Command::new("git")
-        .arg("worktree")
-        .arg("add")
+        .args(["worktree", "add"])
         .arg(&worktree_path)
         .arg(branch)
         .current_dir(project_path)
         .output()
         .await
         .map_err(|e| format!("Failed to run git worktree add: {e}"))?;
+
+    if output.status.success() {
+        return Ok(worktree_path);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.contains("invalid reference") {
+        return Err(format!("git worktree add failed: {}", stderr.trim()));
+    }
+
+    // Branch doesn't exist — create it from HEAD.
+    let output = tokio::process::Command::new("git")
+        .args(["worktree", "add", "-b"])
+        .arg(branch)
+        .arg(&worktree_path)
+        .current_dir(project_path)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run git worktree add -b: {e}"))?;
 
     if !output.status.success() {
         return Err(format!(

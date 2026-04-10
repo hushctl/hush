@@ -1,7 +1,59 @@
 use std::io::Write as _;
+use std::path::Path;
 
 const REPO: &str = "kushalhalder/hush";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Extract a hush release tar.gz and atomically replace the `hush` and
+/// `hush-hook` binaries next to the running executable.
+/// Returns the list of binary paths that were updated.
+pub fn apply_archive(tarball_path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let tarball = std::fs::File::open(tarball_path)?;
+    let decoder = flate2::read::GzDecoder::new(tarball);
+    let mut archive = tar::Archive::new(decoder);
+
+    let cur_exe = std::env::current_exe()?;
+    let bin_dir = cur_exe.parent().ok_or("cannot determine binary directory")?;
+
+    let mut updated: Vec<String> = Vec::new();
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_owned();
+        let fname = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        if fname != "hush" && fname != "hush-hook" {
+            continue;
+        }
+
+        let dest = bin_dir.join(&fname);
+        let tmp = bin_dir.join(format!(".{fname}.tmp"));
+
+        {
+            let mut f = std::fs::File::create(&tmp)?;
+            std::io::copy(&mut entry, &mut f)?;
+            f.flush()?;
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+        }
+
+        std::fs::rename(&tmp, &dest)?;
+        updated.push(dest.display().to_string());
+    }
+
+    if updated.is_empty() {
+        return Err("archive contained no recognised binaries (expected 'hush' and/or 'hush-hook')".into());
+    }
+
+    Ok(updated)
+}
 
 pub async fn run() {
     if let Err(e) = do_upgrade().await {
@@ -72,53 +124,9 @@ async fn do_upgrade() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Extract and atomically replace binaries.
-    let tarball = std::fs::File::open(tmpdir.join(&asset_name))?;
-    let decoder = flate2::read::GzDecoder::new(tarball);
-    let mut archive = tar::Archive::new(decoder);
-
-    let cur_exe = std::env::current_exe()?;
-    let bin_dir = cur_exe
-        .parent()
-        .ok_or("cannot determine binary directory")?;
-
-    let mut updated: Vec<String> = Vec::new();
-
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_owned();
-        let fname = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-
-        if fname != "hush" && fname != "hush-hook" {
-            continue;
-        }
-
-        let dest = bin_dir.join(&fname);
-        let tmp = bin_dir.join(format!(".{fname}.tmp"));
-
-        {
-            let mut f = std::fs::File::create(&tmp)?;
-            std::io::copy(&mut entry, &mut f)?;
-            f.flush()?;
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-        }
-
-        std::fs::rename(&tmp, &dest)?;
-        updated.push(dest.display().to_string());
-    }
-
+    let tarball_path = tmpdir.join(&asset_name);
+    let updated = apply_archive(&tarball_path)?;
     let _ = std::fs::remove_dir_all(&tmpdir);
-
-    if updated.is_empty() {
-        return Err("archive contained no recognised binaries (expected 'hush' and/or 'hush-hook')".into());
-    }
 
     for path in &updated {
         println!("  updated: {path}");

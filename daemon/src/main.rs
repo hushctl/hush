@@ -3,6 +3,7 @@ mod git_watcher;
 mod gossip;
 mod hooks;
 mod memory_monitor;
+mod peer_upgrade;
 mod protocol;
 mod pty;
 mod state;
@@ -29,6 +30,7 @@ use crate::git_watcher::GitWatcher;
 use crate::protocol::ServerMessage;
 use crate::pty::PtyManager;
 use crate::state::{DaemonState, PeerInfo};
+use crate::peer_upgrade::{InboundUpgrades, new_inbound_upgrades};
 use crate::transfer::{InboundTransfers, new_inbound_transfers};
 
 #[derive(clap::Subcommand)]
@@ -91,16 +93,24 @@ struct Args {
     /// the same --tls-dir so they share the already-trusted CA.
     #[arg(long)]
     tls_dir: Option<PathBuf>,
+
+    /// Automatically push a newer binary to peers running an older version.
+    /// Each peer is upgraded at most once per gossip cycle; launchd restarts
+    /// the peer's daemon automatically after the binary is replaced.
+    #[arg(long, default_value_t = false)]
+    auto_upgrade: bool,
 }
 
 #[derive(Clone)]
 struct AppState {
     daemon_state: Arc<RwLock<DaemonState>>,
     state_path: PathBuf,
+
     tx: broadcast::Sender<ServerMessage>,
     pty_manager: PtyManager,
     git_watcher: GitWatcher,
     inbound_transfers: InboundTransfers,
+    inbound_upgrades: InboundUpgrades,
 }
 
 #[tokio::main]
@@ -198,6 +208,7 @@ async fn main() {
             machine_id: url.clone(), // overwritten once peer responds
             url: url.clone(),
             last_seen: now_secs,
+            version: String::new(),
         });
     }
 
@@ -260,7 +271,12 @@ async fn main() {
     );
 
     // Gossip task — runs every 30s, dials known peers
-    gossip::spawn_gossip(Arc::clone(&daemon_state), state_path.clone());
+    gossip::spawn_gossip(
+        Arc::clone(&daemon_state),
+        state_path.clone(),
+        tx.clone(),
+        args.auto_upgrade,
+    );
 
     // Memory pressure monitor — polls system memory every 15s, alerts on transitions
     memory_monitor::spawn(machine_id.clone(), tx.clone());
@@ -275,6 +291,7 @@ async fn main() {
         pty_manager,
         git_watcher,
         inbound_transfers: new_inbound_transfers(),
+        inbound_upgrades: new_inbound_upgrades(),
     };
 
     let app = Router::new()
@@ -342,6 +359,7 @@ async fn ws_handler(
             app_state.pty_manager,
             app_state.git_watcher,
             app_state.inbound_transfers,
+            app_state.inbound_upgrades,
         )
     })
 }

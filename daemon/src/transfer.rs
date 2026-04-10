@@ -665,18 +665,36 @@ async fn respawn_local(pty_manager: &PtyManager, worktree: &Worktree, tx: &broad
 // ─── Destination side ─────────────────────────────────────────────────────────
 
 /// Resolve the destination path for an inbound transfer.
-pub fn resolve_dest_path(project_path_hint: &Path, branch: &str) -> Result<PathBuf, String> {
+///
+/// Prefers placing the worktree next to the hinted project path (same convention
+/// as a local `git worktree add`). Falls back to `{hush_dir}/worktrees/{project}/{branch}`
+/// when the hinted parent directory doesn't exist or isn't writable — which is the
+/// common case when transferring to a machine with a different directory layout.
+pub fn resolve_dest_path(project_path_hint: &Path, branch: &str, hush_dir: &Path) -> Result<PathBuf, String> {
     let project_name = project_path_hint
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "project".to_string());
 
-    let worktree_base = project_path_hint
-        .parent()
-        .unwrap_or(project_path_hint)
-        .join(format!("{project_name}-worktrees"));
+    if let Some(parent) = project_path_hint.parent() {
+        if parent.exists() && is_writable(parent) {
+            let worktree_base = parent.join(format!("{project_name}-worktrees"));
+            return Ok(worktree_base.join(branch));
+        }
+    }
 
-    Ok(worktree_base.join(branch))
+    // Hinted parent doesn't exist or isn't writable on this machine — use the
+    // hush worktrees directory as a safe fallback.
+    Ok(hush_dir.join("worktrees").join(&project_name).join(branch))
+}
+
+fn is_writable(path: &Path) -> bool {
+    // A quick probe: try creating (and immediately removing) a temp file.
+    let probe = path.join(".hush_write_probe");
+    match std::fs::File::create(&probe) {
+        Ok(_) => { let _ = std::fs::remove_file(&probe); true }
+        Err(_) => false,
+    }
 }
 
 /// Apply an inbound transfer: extract tars, install history, register worktree, spawn pty.

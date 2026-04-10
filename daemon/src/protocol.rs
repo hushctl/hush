@@ -91,6 +91,9 @@ pub enum ClientMessage {
         machine_id: String,
         url: String,
         peers: Vec<PeerInfo>,
+        /// Sender's daemon version (e.g. "0.9.1"). Empty for pre-version peers.
+        #[serde(default)]
+        version: String,
     },
 
     // ── Transfer: browser → source daemon ────────────────────────────────────
@@ -143,6 +146,31 @@ pub enum ClientMessage {
     TransferAbort {
         transfer_id: String,
         reason: String,
+    },
+
+    // ── Peer upgrade: browser → source daemon ────────────────────────────────
+
+    /// Browser asks this daemon to push its binary to an older peer.
+    PeerUpgrade {
+        dest_machine_id: String,
+    },
+
+    // ── Peer upgrade: source daemon → destination daemon ─────────────────────
+
+    /// Source daemon offers its binary to the destination.
+    UpgradeOffer {
+        upgrade_id: String,
+        from_machine_id: String,
+        /// Version being offered (e.g. "0.9.2").
+        version: String,
+        /// Platform identifier (e.g. "darwin-aarch64"). Dest rejects mismatches.
+        platform: String,
+        /// Total compressed bytes that will follow as binary frames.
+        total_bytes: u64,
+    },
+    /// Source signals that all binary frames have been sent; destination should apply.
+    UpgradeCommit {
+        upgrade_id: String,
     },
 }
 
@@ -214,6 +242,38 @@ pub enum ServerMessage {
     PeerList {
         machine_id: String,
         peers: Vec<PeerInfo>,
+        /// Sender's daemon version (e.g. "0.9.1").
+        #[serde(default)]
+        version: String,
+    },
+
+    // ── Peer upgrade responses (destination → source) ─────────────────────────
+
+    /// Destination is ready to receive upgrade binary frames.
+    UpgradeAck {
+        machine_id: String,
+        upgrade_id: String,
+    },
+    /// Streamed bytes progress (source → browser, dest → browser).
+    UpgradeProgress {
+        machine_id: String,
+        upgrade_id: String,
+        dest_machine_id: String,
+        bytes_sent: u64,
+        total_bytes: u64,
+    },
+    /// Upgrade applied; destination is restarting.
+    UpgradeComplete {
+        machine_id: String,
+        upgrade_id: String,
+        dest_machine_id: String,
+        version: String,
+    },
+    /// Upgrade failed at source or destination.
+    UpgradeError {
+        machine_id: String,
+        upgrade_id: String,
+        message: String,
     },
     /// Live git status for a worktree (from poller or one-shot request).
     GitStatus {
