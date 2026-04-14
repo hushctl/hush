@@ -9,8 +9,9 @@
  *  5. Daemon spawns claude --continue in that worktree directory
  *  6. Browser can send a message to a specific worktree
  *  7. Daemon reads Claude Code's stdout and relays it back over WebSocket
- *  8. Daemon persists state to ~/.mission-control/state.json
- *  9. On restart, daemon reads state.json and knows about existing projects/worktrees
+ *  8. paste_image: daemon decodes base64, writes file to disk, injects path into pty
+ *  9. Daemon persists state to ~/.mission-control/state.json
+ * 10. On restart, daemon reads state.json and knows about existing projects/worktrees
  */
 
 import WebSocket from 'ws';
@@ -21,10 +22,12 @@ import os from 'os';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const PORT = 9111;
-const WS_URL = `ws://localhost:${PORT}/ws`;
-const STATE_FILE = path.join(os.homedir(), '.mission-control', 'state.json');
-const DAEMON_BIN = path.resolve('../daemon/target/debug/mcd');
+const PORT = 19000 + (process.pid % 1000); // throwaway port so tests don't conflict with a running daemon
+const WS_URL = `wss://localhost:${PORT}/ws`;
+const TEST_DIR = path.join(os.tmpdir(), `mc-test-state-${Date.now()}`);
+mkdirSync(TEST_DIR, { recursive: true });
+const STATE_FILE = path.join(TEST_DIR, 'state.json');
+const DAEMON_BIN = path.resolve('../daemon/target/debug/hush');
 const TURN_TIMEOUT_MS = 30_000; // max time to wait for a claude response
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -46,7 +49,7 @@ function fail(name, reason) {
 /** Open a WebSocket and wait for it to be ready. */
 function connect() {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(WS_URL, { rejectUnauthorized: false });
     ws.once('open', () => resolve(ws));
     ws.once('error', reject);
     setTimeout(() => reject(new Error('connect timeout')), 5000);
@@ -81,7 +84,7 @@ function send(ws, obj) {
 
 /** Start the daemon and wait until it is accepting connections. */
 async function startDaemon() {
-  const proc = spawn(DAEMON_BIN, [], {
+  const proc = spawn(DAEMON_BIN, ['--port', String(PORT), '--state-file', STATE_FILE], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -144,10 +147,10 @@ let ws;
 
 try {
   // ── Test 1: Daemon starts and listens on ws://localhost:9111 ────────────────
-  console.log('Test 1: Daemon starts and listens on ws://localhost:9111');
+  console.log(`Test 1: Daemon starts and listens on ws://localhost:${PORT}`);
   try {
     daemon = await startDaemon();
-    pass('daemon is listening on port 9111');
+    pass(`daemon is listening on port ${PORT}`);
   } catch (e) {
     fail('daemon failed to start', e.message);
     process.exit(1); // no point continuing
@@ -246,8 +249,54 @@ try {
     else fail('stdout relay', e.message);
   }
 
-  // ── Test 8: State persisted to ~/.mission-control/state.json ───────────────
-  console.log('\nTest 8: State persisted to ~/.mission-control/state.json');
+  // ── Test 8: paste_image — decode, write to disk, inject path ────────────────
+  console.log('\nTest 8: paste_image — decode base64, write file, inject path into pty');
+  const PASTE_DIR = path.join(TEST_DIR, 'paste');
+  const pasteFilename = `test-paste-${Date.now()}.png`;
+  try {
+    // Create a tiny 1x1 red PNG (68 bytes) as base64
+    const pngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+
+    // Listen for errors — paste_image doesn't send a success reply, only errors
+    let gotError = false;
+    const errorWatcher = waitFor(ws, msg => {
+      if (msg.type === 'error' && msg.message?.includes('paste_image')) {
+        gotError = true;
+        return true;
+      }
+      return false;
+    }, 3000).catch(() => {}); // timeout is expected (no error = success)
+
+    send(ws, {
+      type: 'paste_image',
+      worktree_id: worktreeId,
+      data: pngBase64,
+      filename: pasteFilename,
+    });
+
+    // Give daemon time to process
+    await sleep(1000);
+
+    // Verify file was written to disk
+    const pastedFile = path.join(PASTE_DIR, pasteFilename);
+    if (!existsSync(pastedFile)) throw new Error(`${pastedFile} was not created`);
+    const written = readFileSync(pastedFile);
+    const expected = Buffer.from(pngBase64, 'base64');
+    if (!written.equals(expected)) {
+      throw new Error(`file content mismatch: got ${written.length} bytes, expected ${expected.length}`);
+    }
+    if (gotError) throw new Error('daemon returned a paste_image error');
+    pass(`image written to ${pastedFile} (${written.length} bytes, content matches)`);
+
+    // Clean up the test file
+    try { unlinkSync(pastedFile); } catch (_) {}
+  } catch (e) {
+    fail('paste_image', e.message);
+  }
+
+  // ── Test 9: State persisted to ~/.mission-control/state.json ───────────────
+  console.log('\nTest 9: State persisted to ~/.mission-control/state.json');
   try {
     if (!existsSync(STATE_FILE)) throw new Error(`${STATE_FILE} does not exist`);
     const state = JSON.parse(readFileSync(STATE_FILE, 'utf8'));
@@ -260,8 +309,8 @@ try {
     fail('state persistence', e.message);
   }
 
-  // ── Test 9: On restart, daemon reads state.json ─────────────────────────────
-  console.log('\nTest 9: Daemon restart — reads state.json, knows existing projects/worktrees');
+  // ── Test 10: On restart, daemon reads state.json ────────────────────────────
+  console.log('\nTest 10: Daemon restart — reads state.json, knows existing projects/worktrees');
   try {
     // Close connection and kill daemon
     ws.close();
@@ -297,6 +346,7 @@ try {
   if (ws && ws.readyState === WebSocket.OPEN) ws.close();
   if (daemon) await killDaemon(daemon);
   try { rmSync(testRepo, { recursive: true, force: true }); } catch (_) {}
+  try { rmSync(TEST_DIR, { recursive: true, force: true }); } catch (_) {}
 
   // Summary
   console.log(`\n${'─'.repeat(50)}`);

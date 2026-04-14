@@ -75,11 +75,34 @@ export function TerminalPane({ worktreeId }: Props) {
       sendRef.current(machineId, { type: 'pty_input', worktree_id: rawWorktreeId, data })
     })
 
-    // Intercept paste events on the terminal container so image clipboard
-    // contents can be uploaded to the daemon. Text pastes fall through to
-    // xterm's default handling. Matches Claude Code's drag-and-drop behaviour:
-    // the daemon writes the image to ~/.hush/paste/ and injects the absolute
-    // path into the pty's stdin.
+    // ── Image upload (paste + drag-and-drop) ──────────────────────────────────
+    // Send image files to the daemon which writes them to ~/.hush/paste/ and
+    // injects the absolute path into the pty's stdin (same as Claude Code's
+    // native drag-and-drop).
+
+    /** Read a File/Blob as base64 and send a paste_image message. */
+    const uploadImage = (file: File) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = reader.result
+        if (typeof result !== 'string') return
+        const base64 = result.slice(result.indexOf(',') + 1)
+        const ext = file.type.split('/')[1] || 'png'
+        const filename = file.name && file.name !== '' && !file.name.startsWith('image.')
+          ? file.name
+          : `pasted-${Date.now()}.${ext}`
+        sendRef.current(machineId, {
+          type: 'paste_image',
+          worktree_id: rawWorktreeId,
+          data: base64,
+          filename,
+        })
+      }
+      reader.readAsDataURL(file)
+    }
+
+    // Use capture phase so we see the event before xterm's internal textarea
+    // handler can swallow it.
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items
       if (!items || items.length === 0) return
@@ -90,29 +113,31 @@ export function TerminalPane({ worktreeId }: Props) {
         const file = item.getAsFile()
         if (!file) continue
         handled = true
-        const reader = new FileReader()
-        reader.onload = () => {
-          const result = reader.result
-          if (typeof result !== 'string') return
-          // Strip the `data:image/png;base64,` prefix
-          const base64 = result.slice(result.indexOf(',') + 1)
-          const ext = item.type.split('/')[1] || 'png'
-          const filename = file.name && file.name.length > 0
-            ? file.name
-            : `pasted-${Date.now()}.${ext}`
-          sendRef.current(machineId, {
-            type: 'paste_image',
-            worktree_id: rawWorktreeId,
-            data: base64,
-            filename,
-          })
-        }
-        reader.readAsDataURL(file)
+        uploadImage(file)
       }
       if (handled) e.preventDefault()
     }
+
+    const handleDragOver = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes('Files')) {
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+      }
+    }
+
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault()
+      const files = e.dataTransfer?.files
+      if (!files) return
+      for (let i = 0; i < files.length; i++) {
+        if (files[i].type.startsWith('image/')) uploadImage(files[i])
+      }
+    }
+
     const containerEl = containerRef.current
-    containerEl.addEventListener('paste', handlePaste)
+    containerEl.addEventListener('paste', handlePaste, true)
+    containerEl.addEventListener('dragover', handleDragOver)
+    containerEl.addEventListener('drop', handleDrop)
 
     // Subscribe to bytes from the daemon for this worktree
     const unsub = ptyBus.subscribe(worktreeId, (payload: PtyPayload) => {
@@ -144,7 +169,9 @@ export function TerminalPane({ worktreeId }: Props) {
     ro.observe(containerRef.current)
 
     return () => {
-      containerEl.removeEventListener('paste', handlePaste)
+      containerEl.removeEventListener('paste', handlePaste, true)
+      containerEl.removeEventListener('dragover', handleDragOver)
+      containerEl.removeEventListener('drop', handleDrop)
       ro.disconnect()
       unsub()
       dataDispose.dispose()
