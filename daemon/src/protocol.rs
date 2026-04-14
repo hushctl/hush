@@ -42,6 +42,18 @@ pub enum ClientMessage {
     PtyKill {
         worktree_id: String,
     },
+    /// Browser pastes an image into the terminal. Daemon writes the bytes to
+    /// `~/.hush/paste/<filename>` and injects the absolute path (with a
+    /// trailing space) into the pty's stdin so Claude Code picks it up the
+    /// same way it handles drag-and-drop file paths.
+    PasteImage {
+        worktree_id: String,
+        /// Base64-encoded image bytes (PNG, JPEG, etc).
+        data: String,
+        /// Optional filename hint; if missing, a timestamp-based name is used.
+        #[serde(default)]
+        filename: Option<String>,
+    },
     /// Confirm creation of a missing directory + git init, then register it.
     CreateAndRegisterProject {
         path: String,

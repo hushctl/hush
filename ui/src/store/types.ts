@@ -19,6 +19,8 @@ export interface Panel {
 export interface CanvasState {
   panels: Panel[]
   nextZ: number
+  /** When true, opening/closing panels auto-reflows the layout. Flipped off by any manual move/resize. */
+  autoTidy: boolean
 }
 
 export interface GitFileStatus {
@@ -137,6 +139,7 @@ export interface AppState {
   resizePanel: (id: string, width: number, height: number) => void
   focusPanel: (id: string) => void
   arrangePanels: (canvasW: number, canvasH: number) => void
+  setAutoTidy: (enabled: boolean) => void
   setCanvasSize: (w: number, h: number) => void
   openPane: (worktreeId: string) => void
   closePane: (worktreeId: string) => void

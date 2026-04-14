@@ -15,6 +15,78 @@ import os from 'os'
 import fs from 'fs'
 import { execSync } from 'child_process'
 
+/**
+ * After each test, scrub any `mc-e2e-*` projects from the daemon and delete
+ * the underlying tmp repos. This keeps the shared daemon's `state.json` clean
+ * across runs — without it, every CI iteration leaves dangling worktrees that
+ * the daemon tries to respawn on restart and that clutter the dot grid.
+ *
+ * We match by project path prefix (`<tmpdir>/mc-e2e-`) rather than tracking
+ * created dirs in a module-level set, so a failed test that aborts before
+ * returning a path still gets cleaned up.
+ */
+test.afterEach(async ({ page }) => {
+  const prefix = path.join(os.tmpdir(), 'mc-e2e-')
+  // Collect worktree IDs owned by e2e projects straight from the store.
+  const victims = await page.evaluate((pfx) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const st = (window as any).__MC_STORE__?.getState()
+    if (!st) return { wtIds: [] as string[], paths: [] as string[] }
+    const projects = st.projects ?? {}
+    const worktrees = st.worktrees ?? {}
+    const e2eProjectIds = new Set(
+      Object.values(projects)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .filter((p: any) => typeof p?.path === 'string' && p.path.startsWith(pfx))
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((p: any) => p.id),
+    )
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const paths = Object.values(projects)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((p: any) => typeof p?.path === 'string' && p.path.startsWith(pfx))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((p: any) => p.path as string)
+    const wtIds = Object.values(worktrees)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((w: any) => e2eProjectIds.has(w?.project_id))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((w: any) => w.id as string)
+    return { wtIds, paths }
+  }, prefix).catch(() => ({ wtIds: [] as string[], paths: [] as string[] }))
+
+  // Ask the daemon to drop each worktree. `remove_worktree` cascades to
+  // remove the parent project when its last worktree is gone.
+  if (victims.wtIds.length > 0) {
+    await page.evaluate((ids) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const st = (window as any).__MC_STORE__?.getState()
+      if (!st) return
+      for (const id of ids) {
+        // IDs in the store are namespaced `${machineId}:${rawId}`.
+        const colon = id.indexOf(':')
+        const machineId = colon >= 0 ? id.slice(0, colon) : 'localhost'
+        const rawId = colon >= 0 ? id.slice(colon + 1) : id
+        st.send(machineId, { type: 'remove_worktree', worktree_id: rawId })
+      }
+    }, victims.wtIds)
+    // Give the daemon a beat to process deletes and broadcast list updates.
+    await page.waitForTimeout(500)
+  }
+
+  // Remove the on-disk tmp repos regardless of daemon state.
+  for (const p of victims.paths) {
+    try { fs.rmSync(p, { recursive: true, force: true }) } catch { /* best effort */ }
+  }
+  // Also sweep any orphan mc-e2e-* dirs left by aborted tests.
+  try {
+    for (const entry of fs.readdirSync(os.tmpdir())) {
+      if (!entry.startsWith('mc-e2e-')) continue
+      try { fs.rmSync(path.join(os.tmpdir(), entry), { recursive: true, force: true }) } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+})
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function collectErrors(page: Page) {
@@ -382,6 +454,190 @@ test.describe('3. Pane view', () => {
     if (!opened) { test.skip(); return }
     await expect(page.getByTestId('top-bar')).toBeVisible({ timeout: 5000 })
     await expect(page.locator('[data-testid^="top-bar-wt-"]').first()).toBeVisible({ timeout: 3000 })
+    expect(errors).toHaveLength(0)
+  })
+
+  /**
+   * Regression pin for the MCP-auth Enter bug.
+   *
+   * When we enabled TERM_PROGRAM=vscode on the daemon's pty (to get Shift+Enter
+   * in Claude Code), xterm.js flipped into kitty keyboard mode and started
+   * sending \x1b[13u for Enter. Claude Code's MCP-auth Ink prompt only
+   * recognises \r, so Enter silently did nothing. This test pins the fix by
+   * asserting that a plain Enter keypress in a focused terminal pane produces
+   * exactly one pty_input frame carrying "\r" — not "\x1b[13u", and not "\n".
+   * Esc is checked alongside to catch the symmetric failure mode.
+   */
+  test('3.5 terminal Enter sends CR, not kitty sequence (MCP auth regression)', async ({ page }) => {
+    const errors = collectErrors(page)
+
+    // Patch WebSocket.send before app code runs so we see every outgoing frame.
+    await page.addInitScript(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(window as any).__WS_SENT = [] as string[]
+      const origSend = WebSocket.prototype.send
+      WebSocket.prototype.send = function (data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (typeof data === 'string') (window as any).__WS_SENT.push(data)
+        return origSend.call(this, data as never)
+      }
+    })
+
+    await page.goto('/')
+    await expect(page.getByTestId('dot-grid')).toBeVisible({ timeout: 5000 })
+    await page.waitForTimeout(800)
+
+    // Wait for the daemon WebSocket to connect.
+    await expect.poll(
+      () => page.evaluate(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const st = (window as any).__MC_STORE__?.getState()
+        return Object.values(st?.daemons ?? {}).some((d: any) => d?.connected)
+      }),
+      { timeout: 10000 },
+    ).toBe(true)
+
+    // Ensure there's at least one worktree — register one if the daemon is empty.
+    const wtCount = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return Object.keys((window as any).__MC_STORE__?.getState()?.worktrees ?? {}).length
+    })
+    if (wtCount === 0) {
+      const repo = makeTestRepo()
+      await registerProjectAndWorktree(page, repo, 'main')
+    }
+
+    const wtId = await firstWorktreeDotId(page)
+    if (!wtId) { test.skip(); return }
+    await page.evaluate((id) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(window as any).__MC_STORE__.getState().openPane(id)
+    }, wtId)
+    const paneLocator = page.getByTestId(`terminal-pane-${wtId}`)
+    await expect(paneLocator).toBeVisible({ timeout: 5000 })
+    await expect(paneLocator.locator('.xterm')).toBeVisible({ timeout: 5000 })
+
+    // Clear frames from attach/scrollback so we only inspect keypress output.
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(window as any).__WS_SENT = []
+    })
+
+    // xterm's hidden textarea is the actual keyboard target.
+    const textarea = paneLocator.locator('.xterm-helper-textarea')
+    await textarea.focus()
+    await page.keyboard.press('Enter')
+    await page.keyboard.press('Escape')
+
+    // Poll until both frames land — WS send is async relative to the keypress.
+    const inputs = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sent = (): string[] => (window as any).__WS_SENT
+      const deadline = Date.now() + 2000
+      while (Date.now() < deadline) {
+        const msgs = sent()
+          .map(s => { try { return JSON.parse(s) } catch { return null } })
+          .filter((m): m is { type: string; data?: string } => !!m && m.type === 'pty_input')
+        if (msgs.length >= 2) return msgs.map(m => m.data ?? '')
+        await new Promise(r => setTimeout(r, 50))
+      }
+      return sent()
+        .map(s => { try { return JSON.parse(s) } catch { return null } })
+        .filter((m): m is { type: string; data?: string } => !!m && m.type === 'pty_input')
+        .map(m => m.data ?? '')
+    })
+
+    expect(inputs).toContain('\r')
+    expect(inputs).toContain('\x1b')
+    // Regression guards: kitty Enter and bare \n must never appear.
+    expect(inputs).not.toContain('\x1b[13u')
+    expect(inputs).not.toContain('\n')
+    expect(errors).toHaveLength(0)
+  })
+
+  /**
+   * Shift+Enter must send the kitty keyboard protocol sequence \x1b[13;2u so
+   * Claude Code's prompt treats it as a soft newline. Without our custom key
+   * handler, xterm.js maps Shift+Enter to plain \r — indistinguishable from
+   * Enter — and multi-line input silently never triggers.
+   */
+  test('3.6 terminal Shift+Enter sends kitty sequence, not \\r', async ({ page }) => {
+    const errors = collectErrors(page)
+
+    await page.addInitScript(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(window as any).__WS_SENT = [] as string[]
+      const origSend = WebSocket.prototype.send
+      WebSocket.prototype.send = function (data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (typeof data === 'string') (window as any).__WS_SENT.push(data)
+        return origSend.call(this, data as never)
+      }
+    })
+
+    await page.goto('/')
+    await expect(page.getByTestId('dot-grid')).toBeVisible({ timeout: 5000 })
+    await page.waitForTimeout(800)
+
+    await expect.poll(
+      () => page.evaluate(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const st = (window as any).__MC_STORE__?.getState()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return Object.values(st?.daemons ?? {}).some((d: any) => d?.connected)
+      }),
+      { timeout: 10000 },
+    ).toBe(true)
+
+    const wtCount = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return Object.keys((window as any).__MC_STORE__?.getState()?.worktrees ?? {}).length
+    })
+    if (wtCount === 0) {
+      const repo = makeTestRepo()
+      await registerProjectAndWorktree(page, repo, 'main')
+    }
+
+    const wtId = await firstWorktreeDotId(page)
+    if (!wtId) { test.skip(); return }
+    await page.evaluate((id) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(window as any).__MC_STORE__.getState().openPane(id)
+    }, wtId)
+    const paneLocator = page.getByTestId(`terminal-pane-${wtId}`)
+    await expect(paneLocator).toBeVisible({ timeout: 5000 })
+    await expect(paneLocator.locator('.xterm')).toBeVisible({ timeout: 5000 })
+
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(window as any).__WS_SENT = []
+    })
+
+    const textarea = paneLocator.locator('.xterm-helper-textarea')
+    await textarea.focus()
+    await page.keyboard.press('Shift+Enter')
+
+    const inputs = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sent = (): string[] => (window as any).__WS_SENT
+      const deadline = Date.now() + 2000
+      while (Date.now() < deadline) {
+        const msgs = sent()
+          .map(s => { try { return JSON.parse(s) } catch { return null } })
+          .filter((m): m is { type: string; data?: string } => !!m && m.type === 'pty_input')
+        if (msgs.length >= 1) return msgs.map(m => m.data ?? '')
+        await new Promise(r => setTimeout(r, 50))
+      }
+      return sent()
+        .map(s => { try { return JSON.parse(s) } catch { return null } })
+        .filter((m): m is { type: string; data?: string } => !!m && m.type === 'pty_input')
+        .map(m => m.data ?? '')
+    })
+
+    expect(inputs).toContain('\x1b[13;2u')
+    // Regression guards: Shift+Enter must not collapse to plain CR or bare LF.
+    expect(inputs).not.toContain('\r')
+    expect(inputs).not.toContain('\n')
     expect(errors).toHaveLength(0)
   })
 })

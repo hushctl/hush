@@ -23,6 +23,18 @@ export function splitKey(key: string): [string, string] {
   return [key.slice(0, idx), key.slice(idx + 1)]
 }
 
+/**
+ * Re-run arrangePanels against the current canvas size if auto-tidy is enabled.
+ * Called after panel add/remove so the layout stays reflowed.
+ */
+function tidyIfAuto(get: () => AppState) {
+  const s = get()
+  if (!s.canvas.autoTidy) return
+  const { w, h } = s.canvasSize
+  if (w === 0 || h === 0) return
+  s.arrangePanels(w, h)
+}
+
 /** Default localhost daemon — used when no daemons are persisted */
 const LOCALHOST_DAEMON: DaemonConfig = {
   id: 'localhost',
@@ -43,7 +55,7 @@ export const useStore = create<AppState>()(
 
       // ── UI state ───────────────────────────────────────────────────────────
       layoutMode: 'grid',
-      canvas: { panels: [], nextZ: 0 },
+      canvas: { panels: [], nextZ: 0, autoTidy: true },
       canvasSize: { w: 0, h: 0 },
       activePanes: [],
       selectedWorktreeId: null,
@@ -414,7 +426,7 @@ export const useStore = create<AppState>()(
             p.id === existing.id ? { ...p, z: nextZ } : p
           )
           set({
-            canvas: { panels, nextZ: nextZ + 1 },
+            canvas: { ...state.canvas, panels, nextZ: nextZ + 1 },
             layoutMode: 'canvas',
             selectedWorktreeId: kind === 'terminal' ? targetId : state.selectedWorktreeId,
           })
@@ -442,11 +454,12 @@ export const useStore = create<AppState>()(
           ? [...state.activePanes.filter(id => id !== targetId), targetId]
           : state.activePanes
         set({
-          canvas: { panels: [...state.canvas.panels, newPanel], nextZ: z + 1 },
+          canvas: { ...state.canvas, panels: [...state.canvas.panels, newPanel], nextZ: z + 1 },
           layoutMode: 'canvas',
           activePanes: newActivePanes,
           selectedWorktreeId: kind === 'terminal' ? targetId : state.selectedWorktreeId,
         })
+        tidyIfAuto(get)
       },
 
       closePanel: (id) => {
@@ -461,6 +474,7 @@ export const useStore = create<AppState>()(
           activePanes: newActivePanes,
           layoutMode: newPanels.length === 0 ? 'grid' : state.layoutMode,
         })
+        tidyIfAuto(get)
       },
 
       movePanel: (id, x, y) => {
@@ -468,7 +482,8 @@ export const useStore = create<AppState>()(
         const panels = state.canvas.panels.map(p =>
           p.id === id ? { ...p, x: Math.max(0, x), y: Math.max(0, y) } : p
         )
-        set({ canvas: { ...state.canvas, panels } })
+        // User-initiated move disables auto-tidy so their layout isn't clobbered.
+        set({ canvas: { ...state.canvas, panels, autoTidy: false } })
       },
 
       resizePanel: (id, width, height) => {
@@ -478,7 +493,7 @@ export const useStore = create<AppState>()(
             ? { ...p, width: Math.max(200, width), height: Math.max(120, height) }
             : p
         )
-        set({ canvas: { ...state.canvas, panels } })
+        set({ canvas: { ...state.canvas, panels, autoTidy: false } })
       },
 
       focusPanel: (id) => {
@@ -590,6 +605,12 @@ export const useStore = create<AppState>()(
           layoutMode: newPanels.length === 0 ? 'grid' : state.layoutMode,
           selectedWorktreeId: newActivePanes[newActivePanes.length - 1] ?? null,
         })
+        tidyIfAuto(get)
+      },
+
+      setAutoTidy: (enabled) => {
+        set(state => ({ canvas: { ...state.canvas, autoTidy: enabled } }))
+        if (enabled) tidyIfAuto(get)
       },
 
       setTileMode: (mode) => set({ tileMode: mode }),
@@ -634,8 +655,9 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'mc-ui-prefs',
-      version: 1,
+      version: 2,
       // v1: migrate ws:// → wss:// in persisted daemon URLs
+      // v2: default canvas.autoTidy for existing users
       migrate: (persisted: unknown, fromVersion: number) => {
         const s = persisted as Record<string, unknown>
         if (fromVersion < 1 && s?.daemons && typeof s.daemons === 'object') {
@@ -645,6 +667,10 @@ export const useStore = create<AppState>()(
               d.url = d.url.replace('ws://', 'wss://')
             }
           }
+        }
+        if (fromVersion < 2 && s?.canvas && typeof s.canvas === 'object') {
+          const canvas = s.canvas as Record<string, unknown>
+          if (typeof canvas.autoTidy !== 'boolean') canvas.autoTidy = true
         }
         return s
       },

@@ -38,6 +38,7 @@ export type ClientMessage =
   | { type: 'pty_input'; worktree_id: string; data: string }
   | { type: 'pty_resize'; worktree_id: string; cols: number; rows: number }
   | { type: 'pty_kill'; worktree_id: string }
+  | { type: 'paste_image'; worktree_id: string; data: string; filename?: string }
   | { type: 'list_projects' }
   | { type: 'list_worktrees' }
   | { type: 'list_peers' }

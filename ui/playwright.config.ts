@@ -8,6 +8,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://localhost:5173',
     headless: true,
+    ignoreHTTPSErrors: true,
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
@@ -15,10 +16,11 @@ export default defineConfig({
   // Start daemon + Vite before all tests
   webServer: [
     {
-      command: '/Users/admin/.cargo/bin/cargo run --manifest-path ../daemon/Cargo.toml --bin mcd',
-      url: 'http://localhost:9111/health',
+      command: '/Users/admin/.cargo/bin/cargo run --manifest-path ../daemon/Cargo.toml --bin hush',
+      url: 'https://localhost:9111/health',
       timeout: 30_000,
       reuseExistingServer: true,
+      ignoreHTTPSErrors: true,
     },
     {
       command: 'npm run dev',

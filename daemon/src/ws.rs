@@ -410,6 +410,88 @@ async fn handle_client_message(
             pty_manager.kill(&worktree_id).await;
         }
 
+        ClientMessage::PasteImage { worktree_id, data, filename } => {
+            // Decode base64 → bytes
+            let bytes = match BASE64.decode(data.as_bytes()) {
+                Ok(b) => b,
+                Err(e) => {
+                    let machine_id = state.read().await.machine_id.clone();
+                    let _ = tx.send(ServerMessage::Error {
+                        machine_id,
+                        message: format!("paste_image: invalid base64: {e}"),
+                        worktree_id: Some(worktree_id),
+                    });
+                    return;
+                }
+            };
+
+            // Resolve ~/.hush/paste/ from state_path (parent of state.json = hush_dir)
+            let hush_dir = state_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let paste_dir = hush_dir.join("paste");
+            if let Err(e) = std::fs::create_dir_all(&paste_dir) {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: format!("paste_image: mkdir {}: {e}", paste_dir.display()),
+                    worktree_id: Some(worktree_id),
+                });
+                return;
+            }
+
+            // Pick a filename — prefer the hint, fall back to timestamp.
+            let name = filename
+                .as_deref()
+                .map(|s| {
+                    // strip any path components the browser might have sent
+                    std::path::Path::new(s)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("pasted.png")
+                        .to_string()
+                })
+                .unwrap_or_else(|| {
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0);
+                    format!("pasted-{ts}.png")
+                });
+            let dest = paste_dir.join(&name);
+
+            if let Err(e) = std::fs::write(&dest, &bytes) {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: format!("paste_image: write {}: {e}", dest.display()),
+                    worktree_id: Some(worktree_id),
+                });
+                return;
+            }
+
+            info!(
+                "paste_image: wrote {} ({} bytes) for worktree {}",
+                dest.display(),
+                bytes.len(),
+                worktree_id
+            );
+
+            // Inject the absolute path into the pty as if the user had dragged
+            // the file in. Leading space so it doesn't merge with any text
+            // currently at the cursor; trailing space so the user can keep typing.
+            let path_str = format!(" {} ", dest.display());
+            if let Err(e) = pty_manager.write(&worktree_id, path_str.as_bytes()).await {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: e,
+                    worktree_id: Some(worktree_id),
+                });
+            }
+        }
+
         ClientMessage::GitStatus { worktree_id } => {
             let working_dir = {
                 let s = state.read().await;

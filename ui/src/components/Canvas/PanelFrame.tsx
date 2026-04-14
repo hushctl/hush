@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, useState } from 'react'
 import { useStore } from '@/store'
 import { statusColor } from '@/lib/status'
 import { X } from 'lucide-react'
@@ -33,6 +33,9 @@ export function PanelFrame({ panel }: Props) {
     ? `${proj?.name ?? wt.project_id} / ${wt.branch} · ${kindLabel}`
     : `${proj?.name ?? panel.targetId} · ${kindLabel}`
 
+  // Suppress CSS transition during drag/resize so the panel tracks the cursor 1:1.
+  const [interacting, setInteracting] = useState(false)
+
   // ── Drag (header) ──────────────────────────────────────────────────────────
   const dragStart = useRef<{ x: number; y: number; px: number; py: number } | null>(null)
 
@@ -40,6 +43,7 @@ export function PanelFrame({ panel }: Props) {
     if ((e.target as HTMLElement).closest('button')) return // let close button work
     e.currentTarget.setPointerCapture(e.pointerId)
     dragStart.current = { x: e.clientX, y: e.clientY, px: panel.x, py: panel.y }
+    setInteracting(true)
     focusPanel(panel.id)
   }, [panel.x, panel.y, panel.id, focusPanel])
 
@@ -51,10 +55,14 @@ export function PanelFrame({ panel }: Props) {
   }, [panel.id, movePanel])
 
   const onHeaderPointerUp = useCallback(() => {
-    // Snap to 8px grid on release
+    // No-op if the pointerup came from a header button (close/$/◫) — dragStart is only set
+    // in pointerdown when the target isn't a button. Without this guard, clicking close
+    // would call movePanel and flip autoTidy off.
+    if (!dragStart.current) return
     const snapped = { x: Math.round(panel.x / 8) * 8, y: Math.round(panel.y / 8) * 8 }
     movePanel(panel.id, snapped.x, snapped.y)
     dragStart.current = null
+    setInteracting(false)
   }, [panel.id, panel.x, panel.y, movePanel])
 
   // ── Resize (edge/corner handles) ──────────────────────────────────────────
@@ -75,6 +83,7 @@ export function PanelFrame({ panel }: Props) {
       pw: panel.width, ph: panel.height,
       edge,
     }
+    setInteracting(true)
     focusPanel(panel.id)
   }, [panel.x, panel.y, panel.width, panel.height, panel.id, focusPanel])
 
@@ -96,11 +105,12 @@ export function PanelFrame({ panel }: Props) {
   }, [panel.id, movePanel, resizePanel])
 
   const onResizePointerUp = useCallback(() => {
-    // Snap to 8px grid
+    if (!resizeStart.current) return
     const sw = Math.round(panel.width / 8) * 8
     const sh = Math.round(panel.height / 8) * 8
     resizePanel(panel.id, sw, sh)
     resizeStart.current = null
+    setInteracting(false)
   }, [panel.id, panel.width, panel.height, resizePanel])
 
   // ── Resize handle factory ─────────────────────────────────────────────────
@@ -135,6 +145,7 @@ export function PanelFrame({ panel }: Props) {
         width: panel.width,
         height: panel.height,
         zIndex: panel.z,
+        transition: interacting ? 'none' : 'left 150ms ease, top 150ms ease, width 150ms ease, height 150ms ease',
       }}
       className="flex flex-col border border-border bg-background overflow-hidden"
       onPointerDown={() => focusPanel(panel.id)}

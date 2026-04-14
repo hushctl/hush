@@ -12,6 +12,8 @@ export function TopBar() {
   const openPanel = useStore(s => s.openPanel)
   const arrangePanels = useStore(s => s.arrangePanels)
   const panels = useStore(s => s.canvas.panels)
+  const autoTidy = useStore(s => s.canvas.autoTidy)
+  const setAutoTidy = useStore(s => s.setAutoTidy)
   const switchToGrid = useStore(s => s.switchToGrid)
 
   function handleTidy() {
@@ -19,6 +21,8 @@ export function TopBar() {
     const w = canvasEl ? canvasEl.clientWidth : window.innerWidth
     const h = canvasEl ? canvasEl.clientHeight : window.innerHeight - 40
     arrangePanels(w, h)
+    // Re-enable auto-tidy: a manual tidy signals the user wants layout managed again.
+    if (!autoTidy) setAutoTidy(true)
   }
   const daemons = useStore(s => s.daemons)
   const daemonList = Object.values(daemons)
@@ -43,15 +47,30 @@ export function TopBar() {
       <div className="w-px h-4 bg-border" />
 
       {panels.length > 0 && (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="rounded-none shadow-none font-normal h-7 text-xs px-2"
-          onClick={handleTidy}
-          title="Arrange panels into a tidy grid"
-        >
-          tidy
-        </Button>
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="rounded-none shadow-none font-normal h-7 text-xs px-2"
+            onClick={handleTidy}
+            title="Arrange panels into a tidy grid"
+          >
+            tidy
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="rounded-none shadow-none font-normal h-7 text-xs px-2 gap-1"
+            onClick={() => setAutoTidy(!autoTidy)}
+            title={autoTidy ? 'Auto-tidy on — click to disable' : 'Auto-tidy off — click to enable'}
+          >
+            <span
+              className="inline-block w-1.5 h-1.5"
+              style={{ backgroundColor: autoTidy ? '#22c55e' : '#6b7280' }}
+            />
+            auto
+          </Button>
+        </>
       )}
 
       <div className="w-px h-4 bg-border" />

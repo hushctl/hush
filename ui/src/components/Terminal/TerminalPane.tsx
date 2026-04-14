@@ -56,14 +56,16 @@ export function TerminalPane({ worktreeId }: Props) {
     })
 
     // Intercept Shift+Enter before xterm maps it to \r (same as plain Enter).
-    // Claude Code expects the kitty keyboard protocol sequence for Shift+Enter
-    // (\x1b[13;2u), which is what VSCode's xterm.js sends. Without this,
-    // Shift+Enter is indistinguishable from plain Enter and multi-line input
-    // never triggers.
+    // Claude Code expects the kitty keyboard protocol sequence \x1b[13;2u
+    // (what VSCode's xterm.js sends). Without this, Shift+Enter is
+    // indistinguishable from plain Enter and multi-line input never triggers.
     term.attachCustomKeyEventHandler(e => {
       if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey) {
         sendRef.current(machineId, { type: 'pty_input', worktree_id: rawWorktreeId, data: '\x1b[13;2u' })
-        return false // prevent xterm's default \r handling
+        // preventDefault stops the hidden textarea from inserting \n, which would
+        // otherwise round-trip back through xterm's onData as a bare newline.
+        e.preventDefault()
+        return false
       }
       return true
     })
@@ -72,6 +74,45 @@ export function TerminalPane({ worktreeId }: Props) {
     const dataDispose = term.onData(data => {
       sendRef.current(machineId, { type: 'pty_input', worktree_id: rawWorktreeId, data })
     })
+
+    // Intercept paste events on the terminal container so image clipboard
+    // contents can be uploaded to the daemon. Text pastes fall through to
+    // xterm's default handling. Matches Claude Code's drag-and-drop behaviour:
+    // the daemon writes the image to ~/.hush/paste/ and injects the absolute
+    // path into the pty's stdin.
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items
+      if (!items || items.length === 0) return
+      let handled = false
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (!item.type.startsWith('image/')) continue
+        const file = item.getAsFile()
+        if (!file) continue
+        handled = true
+        const reader = new FileReader()
+        reader.onload = () => {
+          const result = reader.result
+          if (typeof result !== 'string') return
+          // Strip the `data:image/png;base64,` prefix
+          const base64 = result.slice(result.indexOf(',') + 1)
+          const ext = item.type.split('/')[1] || 'png'
+          const filename = file.name && file.name.length > 0
+            ? file.name
+            : `pasted-${Date.now()}.${ext}`
+          sendRef.current(machineId, {
+            type: 'paste_image',
+            worktree_id: rawWorktreeId,
+            data: base64,
+            filename,
+          })
+        }
+        reader.readAsDataURL(file)
+      }
+      if (handled) e.preventDefault()
+    }
+    const containerEl = containerRef.current
+    containerEl.addEventListener('paste', handlePaste)
 
     // Subscribe to bytes from the daemon for this worktree
     const unsub = ptyBus.subscribe(worktreeId, (payload: PtyPayload) => {
@@ -103,6 +144,7 @@ export function TerminalPane({ worktreeId }: Props) {
     ro.observe(containerRef.current)
 
     return () => {
+      containerEl.removeEventListener('paste', handlePaste)
       ro.disconnect()
       unsub()
       dataDispose.dispose()
