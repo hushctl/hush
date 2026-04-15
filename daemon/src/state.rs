@@ -106,7 +106,11 @@ impl DaemonState {
         if peer.machine_id == self.machine_id || peer.url.is_empty() {
             return; // never add ourselves or peers without a reachable URL
         }
-        if let Some(existing) = self.peers.iter_mut().find(|p| p.machine_id == peer.machine_id) {
+        if let Some(existing) = self
+            .peers
+            .iter_mut()
+            .find(|p| p.machine_id == peer.machine_id)
+        {
             existing.url = peer.url;
             existing.last_seen = peer.last_seen.max(existing.last_seen);
         } else {
@@ -124,7 +128,8 @@ impl DaemonState {
     /// Remove peers whose last_seen is older than `max_age_secs`.
     pub fn prune_stale(&mut self, max_age_secs: u64) {
         let cutoff = now_secs().saturating_sub(max_age_secs);
-        self.peers.retain(|p| p.last_seen >= cutoff || p.last_seen == 0);
+        self.peers
+            .retain(|p| p.last_seen >= cutoff || p.last_seen == 0);
     }
 
     /// Touch a peer's `last_seen` timestamp to now.
@@ -236,6 +241,7 @@ impl DaemonState {
             last_task: None,
             session_id: None,
             machine_id: self.machine_id.clone(),
+            shell_alive: false,
         };
 
         project.worktrees.push(worktree);
@@ -283,6 +289,7 @@ impl DaemonState {
             last_task,
             session_id,
             machine_id: self.machine_id.clone(),
+            shell_alive: false,
         };
 
         project.worktrees.push(worktree);
@@ -308,7 +315,8 @@ impl DaemonState {
 
     /// Remove a project if it has no worktrees left.
     pub fn remove_project_if_empty(&mut self, project_id: &str) {
-        self.projects.retain(|p| !(p.id == project_id && p.worktrees.is_empty()));
+        self.projects
+            .retain(|p| !(p.id == project_id && p.worktrees.is_empty()));
     }
 
     /// Ensure a project is registered under the given name and path, returning its id.
@@ -361,6 +369,7 @@ impl DaemonState {
                     last_task: w.last_task.clone(),
                     session_id: w.session_id.clone(),
                     machine_id: self.machine_id.clone(),
+                    shell_alive: false, // populated by caller with pty_manager.exists()
                 })
             })
             .collect()

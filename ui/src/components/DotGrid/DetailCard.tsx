@@ -1,9 +1,9 @@
-import { ProjectCard } from '@/components/ProjectCard/ProjectCard'
-import type { WorktreeInfo } from '@/lib/protocol'
+import { ProjectCard } from "@/components/ProjectCard/ProjectCard";
+import type { WorktreeInfo } from "@/lib/protocol";
 
 interface Props {
-  worktree: WorktreeInfo
-  onOpen: () => void
+  worktree: WorktreeInfo;
+  onOpen: () => void;
 }
 
 export function DetailCard({ worktree, onOpen }: Props) {
@@ -11,5 +11,5 @@ export function DetailCard({ worktree, onOpen }: Props) {
     <div className="bg-card border border-border">
       <ProjectCard worktree={worktree} onOpen={onOpen} />
     </div>
-  )
+  );
 }

@@ -11,82 +11,94 @@
  *   out: { type: 'result_error', id: string, message: string }
  */
 
-import { pipeline, env } from '@huggingface/transformers'
+import { pipeline, env } from "@huggingface/transformers";
 
 // Use browser cache so second load is instant
-env.useBrowserCache = true
-env.allowLocalModels = false
+env.useBrowserCache = true;
+env.allowLocalModels = false;
 
 export type ClassifyCtx = {
-  projects: string[]
-  daemons: string[]
-}
+  projects: string[];
+  daemons: string[];
+};
 
 type InMsg =
-  | { type: 'load' }
-  | { type: 'classify'; id: string; text: string; ctx: ClassifyCtx }
+  | { type: "load" }
+  | { type: "classify"; id: string; text: string; ctx: ClassifyCtx };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let generator: any = null
+let generator: any = null;
 
-self.addEventListener('message', async (e: MessageEvent<InMsg>) => {
-  const msg = e.data
+self.addEventListener("message", async (e: MessageEvent<InMsg>) => {
+  const msg = e.data;
 
-  if (msg.type === 'load') {
+  if (msg.type === "load") {
     try {
       generator = await pipeline(
-        'text-generation',
-        'onnx-community/Qwen2.5-0.5B-Instruct',
+        "text-generation",
+        "onnx-community/Qwen2.5-0.5B-Instruct",
         {
-          device: 'webgpu',
-          dtype: 'q4',
+          device: "webgpu",
+          dtype: "q4",
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           progress_callback: (info: any) => {
-            if (info?.status === 'progress' && typeof info.progress === 'number') {
+            if (
+              info?.status === "progress" &&
+              typeof info.progress === "number"
+            ) {
               self.postMessage({
-                type: 'progress',
-                file: info.file ?? '',
+                type: "progress",
+                file: info.file ?? "",
                 progress: Math.round(info.progress),
-              })
+              });
             }
           },
         },
-      )
-      self.postMessage({ type: 'ready' })
+      );
+      self.postMessage({ type: "ready" });
     } catch (err) {
-      self.postMessage({ type: 'error', message: String(err) })
+      self.postMessage({ type: "error", message: String(err) });
     }
-    return
+    return;
   }
 
-  if (msg.type === 'classify') {
+  if (msg.type === "classify") {
     if (!generator) {
-      self.postMessage({ type: 'result_error', id: msg.id, message: 'model not loaded' })
-      return
+      self.postMessage({
+        type: "result_error",
+        id: msg.id,
+        message: "model not loaded",
+      });
+      return;
     }
     try {
-      const { id, text, ctx } = msg
-      const messages = [{ role: 'user', content: buildPrompt(text, ctx) }]
+      const { id, text, ctx } = msg;
+      const messages = [{ role: "user", content: buildPrompt(text, ctx) }];
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const output = await generator(messages as any, {
         max_new_tokens: 20,
         do_sample: false,
-      })
+      });
       // transformers.js returns the full conversation; last assistant turn is what we want
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const turns: any[] = output?.[0]?.generated_text ?? []
-      const last = turns[turns.length - 1]
-      const raw: string = last?.content ?? last?.generated_text ?? String(output)
-      self.postMessage({ type: 'result', id, raw })
+      const turns: any[] = output?.[0]?.generated_text ?? [];
+      const last = turns[turns.length - 1];
+      const raw: string =
+        last?.content ?? last?.generated_text ?? String(output);
+      self.postMessage({ type: "result", id, raw });
     } catch (err) {
-      self.postMessage({ type: 'result_error', id: msg.id, message: String(err) })
+      self.postMessage({
+        type: "result_error",
+        id: msg.id,
+        message: String(err),
+      });
     }
   }
-})
+});
 
 function buildPrompt(text: string, ctx: ClassifyCtx): string {
-  const projects = ctx.projects.length > 0 ? ctx.projects.join(', ') : 'none'
-  const daemons = ctx.daemons.length > 0 ? ctx.daemons.join(', ') : 'none'
+  const projects = ctx.projects.length > 0 ? ctx.projects.join(", ") : "none";
+  const daemons = ctx.daemons.length > 0 ? ctx.daemons.join(", ") : "none";
 
   return `Classify this developer workspace command. Reply with ONLY a single JSON object, nothing else.
 
@@ -106,5 +118,5 @@ Available daemons: ${daemons}
 
 Command: "${text}"
 
-JSON:`
+JSON:`;
 }

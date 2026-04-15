@@ -2,16 +2,14 @@
  * Mission Control Daemon — v1 Acceptance Tests
  *
  * Criteria tested:
- *  1. Daemon starts and listens on ws://localhost:9111
+ *  1. Daemon starts and listens on wss://localhost:<port>
  *  2. Browser can connect via WebSocket
  *  3. Browser can send: register a project (name, path)
  *  4. Browser can send: create a worktree (project, branch name)
- *  5. Daemon spawns claude --continue in that worktree directory
- *  6. Browser can send a message to a specific worktree
- *  7. Daemon reads Claude Code's stdout and relays it back over WebSocket
- *  8. paste_image: daemon decodes base64, writes file to disk, injects path into pty
- *  9. Daemon persists state to ~/.mission-control/state.json
- * 10. On restart, daemon reads state.json and knows about existing projects/worktrees
+ *  5. pty_attach returns scrollback or pty_data (pty is alive)
+ *  6. paste_image: daemon decodes base64, writes file to disk, injects path into pty
+ *  7. Daemon persists state to state.json
+ *  8. On restart, daemon reads state.json and knows about existing projects/worktrees
  */
 
 import WebSocket from 'ws';
@@ -206,51 +204,22 @@ try {
     process.exit(1);
   }
 
-  // ── Test 5 + 6 + 7: Send a message, daemon spawns claude, relays response ──
-  console.log('\nTest 5+6+7: Send message → daemon spawns claude --continue → response relayed');
-  let gotInit = false;
-  let gotAssistant = false;
-  let gotResult = false;
-  let gotIdle = false;
-
+  // ── Test 5: pty_attach — verify pty is alive ─────────────────────────────────
+  console.log('\nTest 5: pty_attach — verify pty is alive (scrollback or pty_data received)');
   try {
-    // Collect events until session_ended arrives
-    const p = waitFor(ws, (msg, all) => {
-      if (msg.type === 'claude_event') {
-        const ev = msg.event;
-        if (ev.type === 'system' && ev.subtype === 'init') gotInit = true;
-        if (ev.type === 'assistant') gotAssistant = true;
-        if (ev.type === 'result' && ev.subtype === 'success') gotResult = true;
-      }
-      if (msg.type === 'status_change' && msg.status === 'idle') gotIdle = true;
-      return msg.type === 'session_ended';
-    }, TURN_TIMEOUT_MS);
-
-    send(ws, { type: 'send_message', worktree_id: worktreeId, content: 'Reply with exactly one word: hello' });
+    const p = waitFor(ws, msg =>
+      (msg.type === 'pty_data' || msg.type === 'pty_scrollback') && msg.worktree_id === worktreeId,
+      10000,
+    );
+    send(ws, { type: 'pty_attach', worktree_id: worktreeId, cols: 80, rows: 24 });
     const { msg } = await p;
-
-    // Test 5: claude --continue was spawned (init event means a process started)
-    if (gotInit) pass('claude --continue process spawned (received system/init event)');
-    else fail('claude --continue spawn', 'no system/init event received');
-
-    // Test 6: daemon wrote our message to claude's stdin (assistant event means claude processed it)
-    if (gotAssistant) pass('message sent to claude stdin and processed (received assistant event)');
-    else fail('message routing to stdin', 'no assistant event received');
-
-    // Test 7: stdout relayed back over WebSocket
-    if (gotResult) pass('claude stdout relayed back to browser (received result event)');
-    else fail('stdout relay', 'no result event received');
-
-    // Bonus: status returned to idle
-    if (!gotIdle) console.log('    (note: idle status_change not received before session_ended)');
+    pass(`pty is alive — received ${msg.type} (${(msg.data || '').length} chars)`);
   } catch (e) {
-    if (!gotInit) fail('claude --continue spawn', e.message);
-    else if (!gotAssistant) fail('message routing to stdin', e.message);
-    else fail('stdout relay', e.message);
+    fail('pty_attach', e.message);
   }
 
-  // ── Test 8: paste_image — decode, write to disk, inject path ────────────────
-  console.log('\nTest 8: paste_image — decode base64, write file, inject path into pty');
+  // ── Test 6: paste_image — decode, write to disk, inject path ────────────────
+  console.log('\nTest 6: paste_image — decode base64, write file, inject path into pty');
   const PASTE_DIR = path.join(TEST_DIR, 'paste');
   const pasteFilename = `test-paste-${Date.now()}.png`;
   try {
@@ -295,8 +264,8 @@ try {
     fail('paste_image', e.message);
   }
 
-  // ── Test 9: State persisted to ~/.mission-control/state.json ───────────────
-  console.log('\nTest 9: State persisted to ~/.mission-control/state.json');
+  // ── Test 7: State persisted to state.json ───────────────────────────────────
+  console.log('\nTest 7: State persisted to state.json');
   try {
     if (!existsSync(STATE_FILE)) throw new Error(`${STATE_FILE} does not exist`);
     const state = JSON.parse(readFileSync(STATE_FILE, 'utf8'));
@@ -309,8 +278,8 @@ try {
     fail('state persistence', e.message);
   }
 
-  // ── Test 10: On restart, daemon reads state.json ────────────────────────────
-  console.log('\nTest 10: Daemon restart — reads state.json, knows existing projects/worktrees');
+  // ── Test 8: On restart, daemon reads state.json ─────────────────────────────
+  console.log('\nTest 8: Daemon restart — reads state.json, knows existing projects/worktrees');
   try {
     // Close connection and kill daemon
     ws.close();

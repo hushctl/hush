@@ -97,9 +97,9 @@ pub fn local_platform() -> String {
 /// Package the running `hush` and its sibling `hush-hook` into a tar.gz in
 /// `tmp_dir`. Returns `(path, compressed_byte_size)`.
 fn package_binaries(tmp_dir: &Path) -> Result<(PathBuf, u64), String> {
-    let cur_exe = std::env::current_exe()
-        .map_err(|e| format!("current_exe: {e}"))?;
-    let bin_dir = cur_exe.parent()
+    let cur_exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let bin_dir = cur_exe
+        .parent()
         .ok_or("cannot determine binary directory")?;
 
     let hook_path = bin_dir.join("hush-hook");
@@ -109,8 +109,8 @@ fn package_binaries(tmp_dir: &Path) -> Result<(PathBuf, u64), String> {
 
     let tarball_path = tmp_dir.join("hush-upgrade.tar.gz");
     {
-        let file = std::fs::File::create(&tarball_path)
-            .map_err(|e| format!("create tarball: {e}"))?;
+        let file =
+            std::fs::File::create(&tarball_path).map_err(|e| format!("create tarball: {e}"))?;
         let gz = GzEncoder::new(file, Compression::fast());
         let mut tar = TarBuilder::new(gz);
         tar.append_path_with_name(&cur_exe, "hush")
@@ -167,7 +167,10 @@ pub async fn send_upgrade(
     }
     let (tarball_path, total_bytes) = match package_binaries(&tmp_dir) {
         Ok(r) => r,
-        Err(e) => { fail(e); return; }
+        Err(e) => {
+            fail(e);
+            return;
+        }
     };
 
     // 2. Dial destination
@@ -175,10 +178,20 @@ pub async fn send_upgrade(
     let (mut ws, _) = match tokio::time::timeout(
         DIAL_TIMEOUT,
         connect_async_tls_with_config(&dest_url, None, false, Some(connector)),
-    ).await {
+    )
+    .await
+    {
         Ok(Ok(r)) => r,
-        Ok(Err(e)) => { fail(format!("ws connect: {e}")); let _ = std::fs::remove_file(&tarball_path); return; }
-        Err(_)     => { fail("connect timeout".into()); let _ = std::fs::remove_file(&tarball_path); return; }
+        Ok(Err(e)) => {
+            fail(format!("ws connect: {e}"));
+            let _ = std::fs::remove_file(&tarball_path);
+            return;
+        }
+        Err(_) => {
+            fail("connect timeout".into());
+            let _ = std::fs::remove_file(&tarball_path);
+            return;
+        }
     };
 
     // 3. Send UpgradeOffer
@@ -207,9 +220,16 @@ pub async fn send_upgrade(
     // 5. Stream binary frames
     let mut bytes_sent = 0u64;
     let stream_result = stream_file(
-        &mut ws, &tarball_path, &mut bytes_sent, total_bytes,
-        &tx, &machine_id, &upgrade_id, &dest_machine_id,
-    ).await;
+        &mut ws,
+        &tarball_path,
+        &mut bytes_sent,
+        total_bytes,
+        &tx,
+        &machine_id,
+        &upgrade_id,
+        &dest_machine_id,
+    )
+    .await;
     let _ = std::fs::remove_file(&tarball_path);
     if let Err(e) = stream_result {
         fail(format!("stream: {e}"));
@@ -245,7 +265,9 @@ pub async fn send_upgrade(
 }
 
 async fn wait_for_ack(
-    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     upgrade_id: &str,
 ) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + ACK_TIMEOUT;
@@ -257,8 +279,8 @@ async fn wait_for_ack(
             .ok_or("stream ended")?
             .map_err(|e| format!("ws recv: {e}"))?;
         if let Message::Text(text) = msg {
-            let v: serde_json::Value = serde_json::from_str(&text)
-                .map_err(|e| format!("json: {e}"))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("json: {e}"))?;
             if v.get("type").and_then(|t| t.as_str()) == Some("upgrade_ack")
                 && v.get("upgrade_id").and_then(|i| i.as_str()) == Some(upgrade_id)
             {
@@ -269,7 +291,9 @@ async fn wait_for_ack(
 }
 
 async fn stream_file(
-    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     path: &Path,
     bytes_sent: &mut u64,
     total_bytes: u64,
@@ -278,15 +302,17 @@ async fn stream_file(
     upgrade_id: &str,
     dest_machine_id: &str,
 ) -> Result<(), String> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("open tarball: {e}"))?;
+    let file = std::fs::File::open(path).map_err(|e| format!("open tarball: {e}"))?;
     let mut reader = std::io::BufReader::new(file);
     let mut buf = vec![0u8; BINARY_CHUNK_SIZE];
 
     loop {
-        let n = reader.read(&mut buf)
+        let n = reader
+            .read(&mut buf)
             .map_err(|e| format!("read chunk: {e}"))?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         ws.send(Message::Binary(buf[..n].to_vec().into()))
             .await
             .map_err(|e| format!("send binary frame: {e}"))?;
@@ -306,7 +332,9 @@ async fn stream_file(
 }
 
 async fn wait_for_complete(
-    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     upgrade_id: &str,
 ) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + COMPLETE_TIMEOUT;
@@ -318,13 +346,16 @@ async fn wait_for_complete(
             .ok_or("stream ended")?
             .map_err(|e| format!("ws recv: {e}"))?;
         if let Message::Text(text) = msg {
-            let v: serde_json::Value = serde_json::from_str(&text)
-                .map_err(|e| format!("json: {e}"))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("json: {e}"))?;
             if v.get("upgrade_id").and_then(|i| i.as_str()) == Some(upgrade_id) {
                 match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                     "upgrade_complete" => return Ok(()),
                     "upgrade_error" => {
-                        let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error");
+                        let msg = v
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("unknown error");
                         return Err(msg.to_string());
                     }
                     _ => {}
@@ -346,12 +377,15 @@ pub async fn apply_upgrade(
     let upgrade_id = upgrade.upgrade_id.clone();
     let version = upgrade.version.clone();
 
-    info!("Upgrade {upgrade_id}: applying v{version} from {}", upgrade.from_machine_id);
+    info!(
+        "Upgrade {upgrade_id}: applying v{version} from {}",
+        upgrade.from_machine_id
+    );
     upgrade.close_file();
 
     let temp_path = upgrade.temp_path.clone();
-    let result = tokio::task::spawn_blocking(move || crate::upgrade::apply_archive(&temp_path))
-        .await;
+    let result =
+        tokio::task::spawn_blocking(move || crate::upgrade::apply_archive(&temp_path)).await;
 
     let _ = std::fs::remove_file(&upgrade.temp_path);
 
@@ -385,7 +419,8 @@ pub async fn apply_upgrade(
                     #[cfg(unix)]
                     {
                         use std::os::unix::process::CommandExt;
-                        let saved_args = crate::DAEMON_ARGS.get()
+                        let saved_args = crate::DAEMON_ARGS
+                            .get()
                             .map(|a| a.as_slice())
                             .unwrap_or(&[]);
                         // argv[0] = new path, rest = original args (skip old argv[0])

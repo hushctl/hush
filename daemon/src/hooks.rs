@@ -91,7 +91,10 @@ async fn handle_line(
         }
     };
 
-    debug!("hook event={} worktree={}", parsed.event, parsed.worktree_id);
+    debug!(
+        "hook event={} worktree={}",
+        parsed.event, parsed.worktree_id
+    );
 
     // Decide the new status (and possibly extract last_task / session_id).
     let new_status: Option<WorktreeStatus> = match parsed.event.as_str() {

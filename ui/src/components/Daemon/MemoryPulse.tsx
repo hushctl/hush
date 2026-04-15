@@ -1,34 +1,42 @@
-import { fmtBytes } from '@/components/Layout/MemoryBanner'
+import { fmtBytes } from "@/components/Layout/MemoryBanner";
 
 interface Sample {
-  t: number
-  ratio: number
+  t: number;
+  ratio: number;
 }
 
 interface Props {
-  alert: { level: 'warning' | 'critical'; availableBytes: number; totalBytes: number } | null
-  samples: Sample[]
-  connected: boolean
+  alert: {
+    level: "warning" | "critical";
+    availableBytes: number;
+    totalBytes: number;
+  } | null;
+  samples: Sample[];
+  connected: boolean;
 }
 
 const PULSE_COLOR: Record<string, string> = {
-  warning: '#f59e0b',
-  critical: '#ef4444',
-  normal: '#3f3f46',
-  disconnected: '#27272a',
-}
+  warning: "#f59e0b",
+  critical: "#ef4444",
+  normal: "#3f3f46",
+  disconnected: "#27272a",
+};
 
 export function MemoryPulse({ alert, samples, connected }: Props) {
-  const level = !connected ? 'disconnected' : alert ? alert.level : 'normal'
-  const color = PULSE_COLOR[level]
+  const level = !connected ? "disconnected" : alert ? alert.level : "normal";
+  const color = PULSE_COLOR[level];
 
-  const hasData = alert !== null || samples.length > 0
+  const hasData = alert !== null || samples.length > 0;
 
   return (
     <div className="flex items-center gap-4">
       {/* Breathing dot */}
       <div
-        className={level !== 'disconnected' && level !== 'normal' ? 'animate-pulse' : undefined}
+        className={
+          level !== "disconnected" && level !== "normal"
+            ? "animate-pulse"
+            : undefined
+        }
         style={{
           width: 40,
           height: 40,
@@ -43,10 +51,10 @@ export function MemoryPulse({ alert, samples, connected }: Props) {
         {/* Label */}
         <span className="text-xs font-mono text-muted-foreground">
           {!connected
-            ? 'disconnected'
+            ? "disconnected"
             : alert
               ? `${fmtBytes(alert.availableBytes)} / ${fmtBytes(alert.totalBytes)} free`
-              : 'memory ok'}
+              : "memory ok"}
         </span>
 
         {/* Sparkline */}
@@ -55,28 +63,28 @@ export function MemoryPulse({ alert, samples, connected }: Props) {
         )}
       </div>
     </div>
-  )
+  );
 }
 
 function Sparkline({ samples, level }: { samples: Sample[]; level: string }) {
-  const W = 180
-  const H = 28
-  const minRatio = 0
-  const maxRatio = 1
+  const W = 180;
+  const H = 28;
+  const minRatio = 0;
+  const maxRatio = 1;
 
   const pts = samples.map((s, i) => {
-    const x = (i / (samples.length - 1)) * W
+    const x = (i / (samples.length - 1)) * W;
     // Invert: low ratio (less free) = higher on chart
-    const y = H - ((s.ratio - minRatio) / (maxRatio - minRatio)) * H
-    return `${x},${y}`
-  })
+    const y = H - ((s.ratio - minRatio) / (maxRatio - minRatio)) * H;
+    return `${x},${y}`;
+  });
 
-  const color = PULSE_COLOR[level]
+  const color = PULSE_COLOR[level];
 
   return (
-    <svg width={W} height={H} style={{ display: 'block', overflow: 'visible' }}>
+    <svg width={W} height={H} style={{ display: "block", overflow: "visible" }}>
       <polyline
-        points={pts.join(' ')}
+        points={pts.join(" ")}
         fill="none"
         stroke={color}
         strokeWidth={1.5}
@@ -85,5 +93,5 @@ function Sparkline({ samples, level }: { samples: Sample[]; level: string }) {
         opacity={0.7}
       />
     </svg>
-  )
+  );
 }

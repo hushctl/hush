@@ -161,7 +161,11 @@ async fn handle_client_message(
             let path_buf = PathBuf::from(&path);
             if !path_buf.is_dir() {
                 let machine_id = state.read().await.machine_id.clone();
-                let _ = tx.send(ServerMessage::PathNotFound { machine_id, path, name });
+                let _ = tx.send(ServerMessage::PathNotFound {
+                    machine_id,
+                    path,
+                    name,
+                });
                 return;
             }
             let info = {
@@ -175,7 +179,10 @@ async fn handle_client_message(
                 let s = state.read().await;
                 (s.machine_id.clone(), s.project_list())
             };
-            let _ = tx.send(ServerMessage::ProjectList { machine_id, projects });
+            let _ = tx.send(ServerMessage::ProjectList {
+                machine_id,
+                projects,
+            });
         }
 
         ClientMessage::CreateAndRegisterProject { path, name } => {
@@ -209,12 +216,18 @@ async fn handle_client_message(
                 s.save(&state_path);
                 info
             };
-            info!("Created and registered project: {} ({})", info.name, info.id);
+            info!(
+                "Created and registered project: {} ({})",
+                info.name, info.id
+            );
             let (machine_id, projects) = {
                 let s = state.read().await;
                 (s.machine_id.clone(), s.project_list())
             };
-            let _ = tx.send(ServerMessage::ProjectList { machine_id, projects });
+            let _ = tx.send(ServerMessage::ProjectList {
+                machine_id,
+                projects,
+            });
         }
 
         ClientMessage::CreateWorktree {
@@ -266,7 +279,10 @@ async fn handle_client_message(
                                 let s = state.read().await;
                                 (s.machine_id.clone(), s.worktree_list())
                             };
-                            let _ = tx.send(ServerMessage::WorktreeList { machine_id, worktrees });
+                            let _ = tx.send(ServerMessage::WorktreeList {
+                                machine_id,
+                                worktrees,
+                            });
                         }
                         Err(e) => {
                             let machine_id = state.read().await.machine_id.clone();
@@ -297,8 +313,13 @@ async fn handle_client_message(
             // Look up the worktree's working dir + permission mode
             let info = {
                 let s = state.read().await;
-                s.find_worktree(&worktree_id)
-                    .map(|w| (w.working_dir.clone(), w.permission_mode.clone(), w.session_id.clone()))
+                s.find_worktree(&worktree_id).map(|w| {
+                    (
+                        w.working_dir.clone(),
+                        w.permission_mode.clone(),
+                        w.session_id.clone(),
+                    )
+                })
             };
             let (working_dir, permission_mode, session_id) = match info {
                 Some(t) => t,
@@ -354,7 +375,9 @@ async fn handle_client_message(
             }
 
             // Start git status polling for this worktree
-            git_watcher.start_watching(worktree_id, PathBuf::from(working_dir)).await;
+            git_watcher
+                .start_watching(worktree_id, PathBuf::from(working_dir))
+                .await;
         }
 
         ClientMessage::PtyDetach { worktree_id } => {
@@ -367,13 +390,26 @@ async fn handle_client_message(
             if !pty_manager.exists(&worktree_id).await {
                 let info = {
                     let s = state.read().await;
-                    s.find_worktree(&worktree_id)
-                        .map(|w| (w.working_dir.clone(), w.permission_mode.clone(), w.session_id.clone()))
+                    s.find_worktree(&worktree_id).map(|w| {
+                        (
+                            w.working_dir.clone(),
+                            w.permission_mode.clone(),
+                            w.session_id.clone(),
+                        )
+                    })
                 };
                 if let Some((working_dir, permission_mode, session_id)) = info {
                     let has_session = session_id.is_some();
                     let _ = pty_manager
-                        .spawn(worktree_id.clone(), &working_dir, &permission_mode, None, has_session, 80, 24)
+                        .spawn(
+                            worktree_id.clone(),
+                            &working_dir,
+                            &permission_mode,
+                            None,
+                            has_session,
+                            80,
+                            24,
+                        )
                         .await;
                 }
             }
@@ -410,7 +446,11 @@ async fn handle_client_message(
             pty_manager.kill(&worktree_id).await;
         }
 
-        ClientMessage::PasteImage { worktree_id, data, filename } => {
+        ClientMessage::PasteImage {
+            worktree_id,
+            data,
+            filename,
+        } => {
             // Decode base64 → bytes
             let bytes = match BASE64.decode(data.as_bytes()) {
                 Ok(b) => b,
@@ -604,21 +644,19 @@ async fn handle_client_message(
 
             // Resolve and validate path — prevent directory traversal
             let requested = working_dir.join(&path);
-            let (canonical_file, canonical_base) = match (
-                requested.canonicalize(),
-                working_dir.canonicalize(),
-            ) {
-                (Ok(f), Ok(b)) => (f, b),
-                _ => {
-                    let machine_id = state.read().await.machine_id.clone();
-                    let _ = tx.send(ServerMessage::Error {
-                        machine_id,
-                        message: format!("File not found: {path}"),
-                        worktree_id: Some(worktree_id),
-                    });
-                    return;
-                }
-            };
+            let (canonical_file, canonical_base) =
+                match (requested.canonicalize(), working_dir.canonicalize()) {
+                    (Ok(f), Ok(b)) => (f, b),
+                    _ => {
+                        let machine_id = state.read().await.machine_id.clone();
+                        let _ = tx.send(ServerMessage::Error {
+                            machine_id,
+                            message: format!("File not found: {path}"),
+                            worktree_id: Some(worktree_id),
+                        });
+                        return;
+                    }
+                };
             if !canonical_file.starts_with(&canonical_base) {
                 let machine_id = state.read().await.machine_id.clone();
                 let _ = tx.send(ServerMessage::Error {
@@ -643,7 +681,11 @@ async fn handle_client_message(
             match tokio::fs::read(&canonical_file).await {
                 Ok(bytes) => {
                     let truncated = bytes.len() > MAX_BYTES;
-                    let slice = if truncated { &bytes[..MAX_BYTES] } else { &bytes[..] };
+                    let slice = if truncated {
+                        &bytes[..MAX_BYTES]
+                    } else {
+                        &bytes[..]
+                    };
                     match String::from_utf8(slice.to_vec()) {
                         Ok(content) => {
                             let machine_id = state.read().await.machine_id.clone();
@@ -676,10 +718,16 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::ShellAttach { worktree_id, cols, rows } => {
+        ClientMessage::ShellAttach {
+            worktree_id,
+            shell_id,
+            cols,
+            rows,
+        } => {
             let working_dir = {
                 let s = state.read().await;
-                s.find_worktree(&worktree_id).map(|w| PathBuf::from(&w.working_dir))
+                s.find_worktree(&worktree_id)
+                    .map(|w| PathBuf::from(&w.working_dir))
             };
             let Some(working_dir) = working_dir else {
                 let machine_id = state.read().await.machine_id.clone();
@@ -691,9 +739,12 @@ async fn handle_client_message(
                 return;
             };
 
-            let shell_key = format!("shell:{worktree_id}");
+            let shell_key = format!("shell:{worktree_id}:{shell_id}");
             if !pty_manager.exists(&shell_key).await {
-                if let Err(e) = pty_manager.spawn_shell(worktree_id.clone(), &working_dir, cols, rows).await {
+                if let Err(e) = pty_manager
+                    .spawn_shell(worktree_id.clone(), shell_id.clone(), &working_dir, cols, rows)
+                    .await
+                {
                     let machine_id = state.read().await.machine_id.clone();
                     let _ = tx.send(ServerMessage::Error {
                         machine_id,
@@ -712,13 +763,18 @@ async fn handle_client_message(
                 let _ = tx.send(ServerMessage::ShellScrollback {
                     machine_id,
                     worktree_id,
+                    shell_id,
                     data: encoded,
                 });
             }
         }
 
-        ClientMessage::ShellInput { worktree_id, data } => {
-            let shell_key = format!("shell:{worktree_id}");
+        ClientMessage::ShellInput {
+            worktree_id,
+            shell_id,
+            data,
+        } => {
+            let shell_key = format!("shell:{worktree_id}:{shell_id}");
             if let Err(e) = pty_manager.write(&shell_key, data.as_bytes()).await {
                 let machine_id = state.read().await.machine_id.clone();
                 let _ = tx.send(ServerMessage::Error {
@@ -729,8 +785,13 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::ShellResize { worktree_id, cols, rows } => {
-            let shell_key = format!("shell:{worktree_id}");
+        ClientMessage::ShellResize {
+            worktree_id,
+            shell_id,
+            cols,
+            rows,
+        } => {
+            let shell_key = format!("shell:{worktree_id}:{shell_id}");
             if let Err(e) = pty_manager.resize(&shell_key, cols, rows).await {
                 let machine_id = state.read().await.machine_id.clone();
                 let _ = tx.send(ServerMessage::Error {
@@ -741,8 +802,11 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::ShellKill { worktree_id } => {
-            let shell_key = format!("shell:{worktree_id}");
+        ClientMessage::ShellKill {
+            worktree_id,
+            shell_id,
+        } => {
+            let shell_key = format!("shell:{worktree_id}:{shell_id}");
             pty_manager.kill(&shell_key).await;
         }
 
@@ -751,15 +815,25 @@ async fn handle_client_message(
                 let s = state.read().await;
                 (s.machine_id.clone(), s.project_list())
             };
-            let _ = tx.send(ServerMessage::ProjectList { machine_id, projects });
+            let _ = tx.send(ServerMessage::ProjectList {
+                machine_id,
+                projects,
+            });
         }
 
         ClientMessage::ListWorktrees => {
-            let (machine_id, worktrees) = {
+            let (machine_id, mut worktrees) = {
                 let s = state.read().await;
                 (s.machine_id.clone(), s.worktree_list())
             };
-            let _ = tx.send(ServerMessage::WorktreeList { machine_id, worktrees });
+            // Enrich with shell liveness from pty manager
+            for wt in &mut worktrees {
+                wt.shell_alive = pty_manager.any_with_prefix(&format!("shell:{}:", wt.id)).await;
+            }
+            let _ = tx.send(ServerMessage::WorktreeList {
+                machine_id,
+                worktrees,
+            });
         }
 
         ClientMessage::ListPeers => {
@@ -771,11 +845,12 @@ async fn handle_client_message(
                 machine_id,
                 peers,
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                ca_cert_pem: None,
+                ca_key_pem: None,
             });
         }
 
         // ── Worktree removal ─────────────────────────────────────────────────
-
         ClientMessage::RemoveWorktree { worktree_id } => {
             let wt_info = {
                 let s = state.read().await;
@@ -820,18 +895,25 @@ async fn handle_client_message(
                 let s = state.read().await;
                 (s.machine_id.clone(), s.worktree_list())
             };
-            let _ = tx.send(ServerMessage::WorktreeList { machine_id, worktrees });
+            let _ = tx.send(ServerMessage::WorktreeList {
+                machine_id,
+                worktrees,
+            });
         }
 
         // ── Transfer: browser → source daemon ─────────────────────────────────
-
-        ClientMessage::TransferWorktree { worktree_id, dest_machine_id } => {
+        ClientMessage::TransferWorktree {
+            worktree_id,
+            dest_machine_id,
+        } => {
             let peer_url = transfer::peer_url_for(&state, &dest_machine_id).await;
             let Some(peer_url) = peer_url else {
                 let machine_id = state.read().await.machine_id.clone();
                 let _ = tx.send(ServerMessage::Error {
                     machine_id,
-                    message: format!("Unknown peer machine '{dest_machine_id}' — not in gossip mesh"),
+                    message: format!(
+                        "Unknown peer machine '{dest_machine_id}' — not in gossip mesh"
+                    ),
                     worktree_id: Some(worktree_id),
                 });
                 return;
@@ -840,9 +922,10 @@ async fn handle_client_message(
             let wt_info = {
                 let s = state.read().await;
                 s.find_worktree(&worktree_id).cloned().zip(
-                    s.projects.iter().find(|p| {
-                        p.worktrees.iter().any(|w| w.id == worktree_id)
-                    }).map(|p| (p.name.clone(), p.path.clone()))
+                    s.projects
+                        .iter()
+                        .find(|p| p.worktrees.iter().any(|w| w.id == worktree_id))
+                        .map(|p| (p.name.clone(), p.path.clone())),
                 )
             };
             let Some((worktree, (project_name, project_path))) = wt_info else {
@@ -871,7 +954,10 @@ async fn handle_client_message(
             ));
         }
 
-        ClientMessage::TransferProject { project_id, dest_machine_id } => {
+        ClientMessage::TransferProject {
+            project_id,
+            dest_machine_id,
+        } => {
             let peer_url = transfer::peer_url_for(&state, &dest_machine_id).await;
             let Some(peer_url) = peer_url else {
                 let machine_id = state.read().await.machine_id.clone();
@@ -885,7 +971,8 @@ async fn handle_client_message(
 
             let proj_info = {
                 let s = state.read().await;
-                s.projects.iter()
+                s.projects
+                    .iter()
                     .find(|p| p.id == project_id)
                     .map(|p| (p.name.clone(), p.path.clone(), p.worktrees.clone()))
             };
@@ -918,7 +1005,6 @@ async fn handle_client_message(
         }
 
         // ── Transfer: destination daemon (source dials us) ────────────────────
-
         ClientMessage::TransferOffer {
             transfer_id,
             from_machine_id,
@@ -964,7 +1050,9 @@ async fn handle_client_message(
             let hist_path = xfer_dir.join(format!("{transfer_id}.history.tar"));
 
             let wd_file = match std::fs::OpenOptions::new()
-                .write(true).create(true).truncate(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
                 .open(&wd_path)
             {
                 Ok(f) => Some(f),
@@ -980,25 +1068,28 @@ async fn handle_client_message(
 
             {
                 let mut map = inbound_transfers.lock().await;
-                map.insert(transfer_id.clone(), InboundTransfer {
-                    transfer_id: transfer_id.clone(),
-                    dest_path,
-                    project_name,
-                    project_path_hint: hint,
-                    branch,
-                    permission_mode,
-                    session_id,
-                    last_task,
-                    from_machine_id,
-                    has_history,
-                    total_bytes,
-                    bytes_received: 0,
-                    current_kind: "working_dir".to_string(),
-                    working_dir_file: wd_file,
-                    working_dir_path: wd_path,
-                    history_file: None,
-                    history_path: hist_path,
-                });
+                map.insert(
+                    transfer_id.clone(),
+                    InboundTransfer {
+                        transfer_id: transfer_id.clone(),
+                        dest_path,
+                        project_name,
+                        project_path_hint: hint,
+                        branch,
+                        permission_mode,
+                        session_id,
+                        last_task,
+                        from_machine_id,
+                        has_history,
+                        total_bytes,
+                        bytes_received: 0,
+                        current_kind: "working_dir".to_string(),
+                        working_dir_file: wd_file,
+                        working_dir_path: wd_path,
+                        history_file: None,
+                        history_path: hist_path,
+                    },
+                );
             }
 
             let _ = tx.send(ServerMessage::TransferAck {
@@ -1017,11 +1108,18 @@ async fn handle_client_message(
             if kind == "history" && t.history_file.is_none() {
                 // Open the history temp file on demand
                 match std::fs::OpenOptions::new()
-                    .write(true).create(true).truncate(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
                     .open(&t.history_path)
                 {
-                    Ok(f) => { t.history_file = Some(f); }
-                    Err(e) => { warn!("Transfer {transfer_id}: cannot open history temp file: {e}"); return; }
+                    Ok(f) => {
+                        t.history_file = Some(f);
+                    }
+                    Err(e) => {
+                        warn!("Transfer {transfer_id}: cannot open history temp file: {e}");
+                        return;
+                    }
                 }
             }
             t.current_kind = kind;
@@ -1067,7 +1165,10 @@ async fn handle_client_message(
             });
         }
 
-        ClientMessage::TransferAbort { transfer_id, reason } => {
+        ClientMessage::TransferAbort {
+            transfer_id,
+            reason,
+        } => {
             let removed = {
                 let mut map = inbound_transfers.lock().await;
                 map.remove(&transfer_id)
@@ -1078,12 +1179,13 @@ async fn handle_client_message(
         }
 
         // ── Peer upgrade ─────────────────────────────────────────────────────
-
         ClientMessage::PeerUpgrade { dest_machine_id } => {
             // Browser → this (newer) daemon: push our binary to that peer.
             let (machine_id, peer_url) = {
                 let s = state.read().await;
-                let url = s.peers.iter()
+                let url = s
+                    .peers
+                    .iter()
                     .find(|p| p.machine_id == dest_machine_id)
                     .map(|p| p.url.clone());
                 (s.machine_id.clone(), url)
@@ -1097,7 +1199,11 @@ async fn handle_client_message(
                 return;
             };
             tokio::spawn(pu::send_upgrade(
-                dest_url, dest_machine_id, machine_id, state_path, tx,
+                dest_url,
+                dest_machine_id,
+                machine_id,
+                state_path,
+                tx,
             ));
         }
 
@@ -1125,8 +1231,8 @@ async fn handle_client_message(
             }
 
             // Create temp file
-            let tmp_path = transfer::transfers_dir(&state_path)
-                .join(format!("{upgrade_id}.tar.gz"));
+            let tmp_path =
+                transfer::transfers_dir(&state_path).join(format!("{upgrade_id}.tar.gz"));
             if let Err(e) = std::fs::create_dir_all(tmp_path.parent().unwrap()) {
                 let _ = tx.send(ServerMessage::UpgradeError {
                     machine_id,
@@ -1147,17 +1253,23 @@ async fn handle_client_message(
                 }
             };
 
-            inbound_upgrades.lock().await.insert(upgrade_id.clone(), InboundUpgrade {
-                upgrade_id: upgrade_id.clone(),
-                from_machine_id,
-                version,
-                total_bytes,
-                bytes_received: 0,
-                file: Some(file),
-                temp_path: tmp_path,
-            });
+            inbound_upgrades.lock().await.insert(
+                upgrade_id.clone(),
+                InboundUpgrade {
+                    upgrade_id: upgrade_id.clone(),
+                    from_machine_id,
+                    version,
+                    total_bytes,
+                    bytes_received: 0,
+                    file: Some(file),
+                    temp_path: tmp_path,
+                },
+            );
 
-            let _ = tx.send(ServerMessage::UpgradeAck { machine_id, upgrade_id });
+            let _ = tx.send(ServerMessage::UpgradeAck {
+                machine_id,
+                upgrade_id,
+            });
         }
 
         ClientMessage::UpgradeCommit { upgrade_id } => {
@@ -1176,6 +1288,8 @@ async fn handle_client_message(
             url: sender_url,
             peers: sender_peers,
             version: sender_version,
+            ca_cert_pem: _sender_ca_cert,
+            ca_key_pem: _sender_ca_key,
         } => {
             // Merge sender + their known peers into our state
             {
@@ -1193,15 +1307,18 @@ async fn handle_client_message(
                 s.merge_peers(sender_peers);
                 s.save(&state_path);
             }
-            // Reply with our peer list
+            // Reply with our peer list + CA so the dialing peer can adopt it
             let (machine_id, peers) = {
                 let s = state.read().await;
                 (s.machine_id.clone(), s.known_peers())
             };
+            let (ca_cert_pem, ca_key_pem) = crate::tls::read_ca_pems_from_state(&state_path);
             let _ = tx.send(ServerMessage::PeerList {
                 machine_id,
                 peers,
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                ca_cert_pem,
+                ca_key_pem,
             });
         }
     }

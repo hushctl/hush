@@ -1,0 +1,90 @@
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please fill out the sections below so we can reproduce and fix the issue.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: Describe what went wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: Describe what you expected to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to trigger the bug.
+      placeholder: |
+        1. Start hush with `hush --join wss://...`
+        2. Open browser to https://localhost:9111
+        3. Click + project, enter path...
+        4. See error
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of Hush is affected?
+      options:
+        - Daemon (Rust)
+        - Browser UI
+        - Terminal / xterm.js
+        - Gossip / mesh
+        - TLS / certificates
+        - P2P upgrades
+        - CLI / startup
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Help us understand your setup.
+      placeholder: |
+        - Hush version: (run `hush --version`)
+        - OS: macOS 15.x / Ubuntu 24.04 / etc.
+        - Browser: Chrome 130 / Safari 18 / Firefox 135
+        - Network: single machine / multi-machine mesh / Tailscale
+      value: |
+        - Hush version:
+        - OS:
+        - Browser:
+        - Network: single machine / multi-machine mesh
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Daemon logs
+      description: Paste any relevant output from the daemon (check `/tmp/hush.log` or terminal where hush is running).
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: If applicable, add screenshots of the browser UI or terminal.
+    validations:
+      required: false

@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  build:
-    name: Build & check
+  check:
+    name: Check & lint
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -20,6 +20,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -35,14 +37,98 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('daemon/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: cargo fmt --check
+        working-directory: daemon
+        run: cargo fmt --all -- --check || echo "::warning::Formatting issues found — run 'cargo fmt' to fix"
+
+      - name: cargo clippy
+        working-directory: daemon
+        run: cargo clippy --all-targets
+
       - name: cargo check
         working-directory: daemon
         run: cargo check --all-targets
+
+      - name: cargo test
+        working-directory: daemon
+        run: cargo test --release
+
+  build:
+    name: Build (release)
+    runs-on: macos-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: macos-latest-cargo-${{ hashFiles('daemon/Cargo.lock') }}
+          restore-keys: macos-latest-cargo-
 
       - name: cargo build (release)
         working-directory: daemon
         run: cargo build --release
 
-      - name: cargo test
+  ui:
+    name: UI typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: TypeScript check
+        working-directory: ui
+        run: npx tsc --noEmit
+
+  security:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Install Linux build dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Audit Rust dependencies
         working-directory: daemon
-        run: cargo test --release
+        run: cargo audit
+
+      - name: Check for unsafe code
+        working-directory: daemon
+        run: |
+          # Flag any new unsafe blocks — not a hard fail, but visible in PR
+          if grep -rn 'unsafe\s*{' src/; then
+            echo "::warning::Found unsafe blocks in daemon source — ensure these are reviewed"
+          fi
+
+      - name: Check for secrets in diff
+        if: github.event_name == 'pull_request'
+        run: |
+          # Basic check for common secret patterns in the PR diff
+          git diff origin/main...HEAD -- '*.rs' '*.ts' '*.tsx' '*.json' | \
+            grep -iE '(api_key|secret|password|token|private_key)\s*=' || true
+          # This is informational — a proper secrets scanner (trufflehog, gitleaks) is recommended

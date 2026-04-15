@@ -24,11 +24,11 @@
 //! watchdog stays alive even for very large worktrees.
 
 use std::collections::HashMap;
+use std::io;
 use std::io::{Read as IoRead, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::io;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -155,7 +155,10 @@ pub async fn send_worktree(
     pty_manager: PtyManager,
 ) {
     let transfer_id = new_transfer_id(&machine_id);
-    info!("Transfer {transfer_id}: starting — {} → {peer_url}", worktree.id);
+    info!(
+        "Transfer {transfer_id}: starting — {} → {peer_url}",
+        worktree.id
+    );
 
     let source_wt_id = worktree.id.clone();
     let branch = worktree.branch.clone();
@@ -190,7 +193,9 @@ pub async fn send_worktree(
     pty_manager.kill(&worktree.id).await;
 
     // 2. Collect history files (small, archive to a temp file before dialing)
-    let history_files: Vec<PathBuf> = worktree.session_id.as_deref()
+    let history_files: Vec<PathBuf> = worktree
+        .session_id
+        .as_deref()
         .map(|id| claude_history::session_files_to_transfer(id))
         .unwrap_or_default();
 
@@ -249,7 +254,11 @@ pub async fn send_worktree(
         "has_history": has_history,
         "total_bytes": 0u64,
     });
-    if ws.send(Message::Text(offer.to_string().into())).await.is_err() {
+    if ws
+        .send(Message::Text(offer.to_string().into()))
+        .await
+        .is_err()
+    {
         fail("Failed to send TransferOffer".to_string());
         respawn_local(&pty_manager, &worktree, &tx, &machine_id).await;
         let _ = std::fs::remove_file(&hist_path);
@@ -274,9 +283,19 @@ pub async fn send_worktree(
     let mut bytes_sent = 0u64;
     let working_dir = worktree.working_dir.clone();
     if let Err(e) = stream_working_dir_tar(
-        &mut ws, &working_dir, &mut bytes_sent,
-        &tx, &machine_id, &transfer_id, &worktree.id, &project_name, &worktree.branch, &dest_machine_id,
-    ).await {
+        &mut ws,
+        &working_dir,
+        &mut bytes_sent,
+        &tx,
+        &machine_id,
+        &transfer_id,
+        &worktree.id,
+        &project_name,
+        &worktree.branch,
+        &dest_machine_id,
+    )
+    .await
+    {
         fail(format!("Failed to stream working_dir: {e}"));
         respawn_local(&pty_manager, &worktree, &tx, &machine_id).await;
         let _ = std::fs::remove_file(&hist_path);
@@ -291,14 +310,29 @@ pub async fn send_worktree(
             "transfer_id": &transfer_id,
             "kind": "history",
         });
-        if ws.send(Message::Text(switch.to_string().into())).await.is_err() {
+        if ws
+            .send(Message::Text(switch.to_string().into()))
+            .await
+            .is_err()
+        {
             warn!("Transfer {transfer_id}: failed to send KindSwitch, continuing without history");
         } else {
             let total_with_hist = bytes_sent + hist_size;
             if let Err(e) = send_file_as_binary(
-                &mut ws, &hist_path, &mut bytes_sent, total_with_hist,
-                &tx, &machine_id, &transfer_id, &worktree.id, &project_name, &worktree.branch, &dest_machine_id,
-            ).await {
+                &mut ws,
+                &hist_path,
+                &mut bytes_sent,
+                total_with_hist,
+                &tx,
+                &machine_id,
+                &transfer_id,
+                &worktree.id,
+                &project_name,
+                &worktree.branch,
+                &dest_machine_id,
+            )
+            .await
+            {
                 warn!("Transfer {transfer_id}: history stream failed ({e}), continuing");
             }
         }
@@ -308,7 +342,11 @@ pub async fn send_worktree(
     // 8. Send TransferCommit
     progress("awaiting_commit", bytes_sent, bytes_sent);
     let commit = serde_json::json!({ "type": "transfer_commit", "transfer_id": &transfer_id });
-    if ws.send(Message::Text(commit.to_string().into())).await.is_err() {
+    if ws
+        .send(Message::Text(commit.to_string().into()))
+        .await
+        .is_err()
+    {
         fail("Failed to send TransferCommit".to_string());
         return;
     }
@@ -351,7 +389,10 @@ pub async fn send_worktree(
         let s = state.read().await;
         (s.machine_id.clone(), s.worktree_list())
     };
-    let _ = tx.send(ServerMessage::WorktreeList { machine_id: mid.clone(), worktrees });
+    let _ = tx.send(ServerMessage::WorktreeList {
+        machine_id: mid.clone(),
+        worktrees,
+    });
     let _ = tx.send(ServerMessage::TransferComplete {
         machine_id: mid,
         transfer_id: transfer_id.clone(),
@@ -375,12 +416,15 @@ impl IoWrite for ChannelWriter {
         self.buf.extend_from_slice(data);
         while self.buf.len() >= BINARY_CHUNK_SIZE {
             let chunk: Vec<u8> = self.buf.drain(..BINARY_CHUNK_SIZE).collect();
-            self.tx.blocking_send(chunk)
+            self.tx
+                .blocking_send(chunk)
                 .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "ws receiver closed"))?;
         }
         Ok(data.len())
     }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl Drop for ChannelWriter {
@@ -398,7 +442,9 @@ impl Drop for ChannelWriter {
 /// Returns the number of compressed bytes sent.
 #[allow(clippy::too_many_arguments)]
 async fn stream_working_dir_tar(
-    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     working_dir: &Path,
     bytes_sent: &mut u64,
     tx: &broadcast::Sender<ServerMessage>,
@@ -415,7 +461,10 @@ async fn stream_working_dir_tar(
     // Spawn a background thread to build the tar; it never touches the async runtime.
     let wd = working_dir.to_path_buf();
     let tar_thread = std::thread::spawn(move || -> Result<(), String> {
-        let writer = ChannelWriter { tx: chunk_tx, buf: Vec::new() };
+        let writer = ChannelWriter {
+            tx: chunk_tx,
+            buf: Vec::new(),
+        };
         let gz = GzEncoder::new(writer, Compression::fast());
         let mut tar = TarBuilder::new(gz);
         tar.follow_symlinks(false);
@@ -441,7 +490,7 @@ async fn stream_working_dir_tar(
                 transfer_id: transfer_id.to_string(),
                 phase: "streaming".to_string(),
                 bytes_sent: *bytes_sent,
-                total_bytes: 0,  // unknown — show counter without denominator
+                total_bytes: 0, // unknown — show counter without denominator
                 source_worktree_id: source_worktree_id.to_string(),
                 project_name: project_name.to_string(),
                 branch: branch.to_string(),
@@ -456,14 +505,12 @@ async fn stream_working_dir_tar(
         .map_err(|_| "tar thread panicked".to_string())?
 }
 
-
 fn append_dir_recursive<W: IoWrite>(
     tar: &mut TarBuilder<W>,
     base: &Path,
     dir: &Path,
 ) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -476,14 +523,17 @@ fn append_dir_recursive<W: IoWrite>(
             "node_modules", // Node.js dependencies
             ".venv",        // Python virtualenv
             "venv",
-            "__pycache__",  // Python bytecode
-            ".cache",       // generic cache dir
-            "dist",         // generic build output
-            ".tox",         // Python tox environments
+            "__pycache__", // Python bytecode
+            ".cache",      // generic cache dir
+            "dist",        // generic build output
+            ".tox",        // Python tox environments
         ];
-        if path.is_dir() && SKIP_DIRS.contains(&name) { continue; }
+        if path.is_dir() && SKIP_DIRS.contains(&name) {
+            continue;
+        }
 
-        let rel = path.strip_prefix(base)
+        let rel = path
+            .strip_prefix(base)
             .map_err(|e| format!("strip_prefix: {e}"))?;
 
         if path.is_symlink() || path.is_file() {
@@ -501,11 +551,9 @@ fn append_dir_recursive<W: IoWrite>(
 /// Build a plain tar of history files into `out_path`. Returns file size.
 fn build_history_tar(files: &[PathBuf], out_path: &Path) -> Result<u64, String> {
     if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("mkdir transfers (hist): {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir transfers (hist): {e}"))?;
     }
-    let file = std::fs::File::create(out_path)
-        .map_err(|e| format!("create history tar: {e}"))?;
+    let file = std::fs::File::create(out_path).map_err(|e| format!("create history tar: {e}"))?;
     {
         let mut tar = TarBuilder::new(&file);
         for f in files {
@@ -517,16 +565,16 @@ fn build_history_tar(files: &[PathBuf], out_path: &Path) -> Result<u64, String> 
         tar.into_inner()
             .map_err(|e| format!("tar history finish: {e}"))?;
     }
-    let size = std::fs::metadata(out_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let size = std::fs::metadata(out_path).map(|m| m.len()).unwrap_or(0);
     Ok(size)
 }
 
 /// Read a file and send its bytes as binary WS frames of `BINARY_CHUNK_SIZE`.
 #[allow(clippy::too_many_arguments)]
 async fn send_file_as_binary(
-    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     path: &Path,
     bytes_sent: &mut u64,
     total_bytes: u64,
@@ -538,15 +586,17 @@ async fn send_file_as_binary(
     branch: &str,
     dest_machine_id: &str,
 ) -> Result<(), String> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
     let mut reader = std::io::BufReader::new(file);
     let mut buf = vec![0u8; BINARY_CHUNK_SIZE];
 
     loop {
-        let n = reader.read(&mut buf)
+        let n = reader
+            .read(&mut buf)
             .map_err(|e| format!("read chunk: {e}"))?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
 
         ws.send(Message::Binary(buf[..n].to_vec().into()))
             .await
@@ -574,7 +624,9 @@ async fn send_file_as_binary(
 
 /// Wait for `transfer_ack`, returning `dest_path`.
 async fn wait_for_ack(
-    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     transfer_id: &str,
 ) -> Result<String, String> {
     let deadline = tokio::time::Instant::now() + ACK_TIMEOUT;
@@ -587,12 +639,13 @@ async fn wait_for_ack(
             .map_err(|e| format!("ws recv: {e}"))?;
 
         if let Message::Text(text) = msg {
-            let v: serde_json::Value = serde_json::from_str(&text)
-                .map_err(|e| format!("json: {e}"))?;
+            let v: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| format!("json: {e}"))?;
             if v.get("type").and_then(|t| t.as_str()) == Some("transfer_ack")
                 && v.get("transfer_id").and_then(|t| t.as_str()) == Some(transfer_id)
             {
-                return v.get("dest_path")
+                return v
+                    .get("dest_path")
                     .and_then(|p| p.as_str())
                     .map(String::from)
                     .ok_or_else(|| "transfer_ack missing dest_path".to_string());
@@ -604,13 +657,20 @@ async fn wait_for_ack(
 /// Wait for `transfer_complete` with an idle watchdog (no hard total timeout).
 /// Any inbound message (heartbeat, binary frame, etc.) resets the idle timer.
 async fn wait_for_complete_idle(
-    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     transfer_id: &str,
 ) -> Result<String, String> {
     loop {
         let msg = tokio::time::timeout(IDLE_TIMEOUT, ws.next())
             .await
-            .map_err(|_| format!("idle timeout ({} s) — destination may have crashed", IDLE_TIMEOUT.as_secs()))?
+            .map_err(|_| {
+                format!(
+                    "idle timeout ({} s) — destination may have crashed",
+                    IDLE_TIMEOUT.as_secs()
+                )
+            })?
             .ok_or("stream ended before transfer_complete")?
             .map_err(|e| format!("ws recv: {e}"))?;
 
@@ -624,13 +684,17 @@ async fn wait_for_complete_idle(
             let id = v.get("transfer_id").and_then(|t| t.as_str()).unwrap_or("");
 
             if type_ == "transfer_complete" && id == transfer_id {
-                return v.get("new_worktree_id")
+                return v
+                    .get("new_worktree_id")
                     .and_then(|id| id.as_str())
                     .map(String::from)
                     .ok_or_else(|| "transfer_complete missing new_worktree_id".to_string());
             }
             if type_ == "transfer_error" && id == transfer_id {
-                let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or("unknown");
+                let msg = v
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown");
                 return Err(format!("destination error: {msg}"));
             }
         }
@@ -638,9 +702,13 @@ async fn wait_for_complete_idle(
     }
 }
 
-
 /// Re-spawn the local pty after a failed transfer.
-async fn respawn_local(pty_manager: &PtyManager, worktree: &Worktree, tx: &broadcast::Sender<ServerMessage>, machine_id: &str) {
+async fn respawn_local(
+    pty_manager: &PtyManager,
+    worktree: &Worktree,
+    tx: &broadcast::Sender<ServerMessage>,
+    machine_id: &str,
+) {
     if let Err(e) = pty_manager
         .spawn(
             worktree.id.clone(),
@@ -670,7 +738,11 @@ async fn respawn_local(pty_manager: &PtyManager, worktree: &Worktree, tx: &broad
 /// as a local `git worktree add`). Falls back to `{hush_dir}/worktrees/{project}/{branch}`
 /// when the hinted parent directory doesn't exist or isn't writable — which is the
 /// common case when transferring to a machine with a different directory layout.
-pub fn resolve_dest_path(project_path_hint: &Path, branch: &str, hush_dir: &Path) -> Result<PathBuf, String> {
+pub fn resolve_dest_path(
+    project_path_hint: &Path,
+    branch: &str,
+    hush_dir: &Path,
+) -> Result<PathBuf, String> {
     let project_name = project_path_hint
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -692,7 +764,10 @@ fn is_writable(path: &Path) -> bool {
     // A quick probe: try creating (and immediately removing) a temp file.
     let probe = path.join(".hush_write_probe");
     match std::fs::File::create(&probe) {
-        Ok(_) => { let _ = std::fs::remove_file(&probe); true }
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
         Err(_) => false,
     }
 }
@@ -707,7 +782,11 @@ pub async fn apply_transfer(
     pty_manager: PtyManager,
 ) -> Result<String, String> {
     let dest_path = transfer.dest_path.clone();
-    info!("Transfer {}: applying to {}", transfer.transfer_id, dest_path.display());
+    info!(
+        "Transfer {}: applying to {}",
+        transfer.transfer_id,
+        dest_path.display()
+    );
 
     // Close write handles so we can reopen for reading
     transfer.close_files();
@@ -753,19 +832,19 @@ pub async fn apply_transfer(
     // Extract working_dir tar.gz
     let wd_path = transfer.working_dir_path.clone();
     if wd_path.exists() {
-        std::fs::create_dir_all(&dest_path)
-            .map_err(|e| format!("mkdir dest: {e}"))?;
+        std::fs::create_dir_all(&dest_path).map_err(|e| format!("mkdir dest: {e}"))?;
 
         let dest = dest_path.clone();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
-            let file = std::fs::File::open(&wd_path)
-                .map_err(|e| format!("open working_dir tar: {e}"))?;
+            let file =
+                std::fs::File::open(&wd_path).map_err(|e| format!("open working_dir tar: {e}"))?;
             let gz = flate2::read::GzDecoder::new(std::io::BufReader::new(file));
             let mut archive = tar::Archive::new(gz);
             archive.set_preserve_permissions(false);
             archive.set_unpack_xattrs(false);
             archive.set_overwrite(true);
-            archive.unpack(&dest)
+            archive
+                .unpack(&dest)
                 .map_err(|e| format!("tar unpack: {e}"))?;
             // Clean up temp file
             let _ = std::fs::remove_file(&wd_path);
@@ -794,13 +873,13 @@ pub async fn apply_transfer(
         let dest = dest_path.clone();
         let installed = tokio::task::spawn_blocking(move || -> Result<usize, String> {
             let tmp_dir = std::env::temp_dir().join(format!("hush-hist-{}", uuid_like()));
-            std::fs::create_dir_all(&tmp_dir)
-                .map_err(|e| format!("mkdir hist tmp: {e}"))?;
+            std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("mkdir hist tmp: {e}"))?;
 
-            let file = std::fs::File::open(&hist_path)
-                .map_err(|e| format!("open history tar: {e}"))?;
+            let file =
+                std::fs::File::open(&hist_path).map_err(|e| format!("open history tar: {e}"))?;
             let mut archive = tar::Archive::new(file);
-            archive.unpack(&tmp_dir)
+            archive
+                .unpack(&tmp_dir)
                 .map_err(|e| format!("history tar unpack: {e}"))?;
 
             let files: Vec<PathBuf> = std::fs::read_dir(&tmp_dir)
@@ -818,8 +897,14 @@ pub async fn apply_transfer(
         .map_err(|e| format!("spawn_blocking hist: {e}"))?;
 
         match installed {
-            Ok(n) => info!("Transfer {}: installed {n} history file(s)", transfer.transfer_id),
-            Err(e) => warn!("Transfer {}: history install failed ({e}), session will start fresh", transfer.transfer_id),
+            Ok(n) => info!(
+                "Transfer {}: installed {n} history file(s)",
+                transfer.transfer_id
+            ),
+            Err(e) => warn!(
+                "Transfer {}: history install failed ({e}), session will start fresh",
+                transfer.transfer_id
+            ),
         }
     }
 
@@ -844,7 +929,9 @@ pub async fn apply_transfer(
         let mut s = state.write().await;
         let project_id = s.upsert_project_for_transfer(
             &transfer.project_name,
-            transfer.dest_path.parent()
+            transfer
+                .dest_path
+                .parent()
                 .and_then(|p| p.parent())
                 .unwrap_or(&transfer.dest_path)
                 .to_path_buf(),
@@ -880,7 +967,10 @@ pub async fn apply_transfer(
         let s = state.read().await;
         s.worktree_list()
     };
-    let _ = tx.send(ServerMessage::WorktreeList { machine_id: machine_id.clone(), worktrees });
+    let _ = tx.send(ServerMessage::WorktreeList {
+        machine_id: machine_id.clone(),
+        worktrees,
+    });
 
     Ok(new_wt_id)
 }
@@ -894,7 +984,10 @@ fn uuid_like() -> u128 {
 }
 
 /// Return the peer URL for a machine_id from the state.
-pub async fn peer_url_for(state: &Arc<RwLock<DaemonState>>, dest_machine_id: &str) -> Option<String> {
+pub async fn peer_url_for(
+    state: &Arc<RwLock<DaemonState>>,
+    dest_machine_id: &str,
+) -> Option<String> {
     let s = state.read().await;
     s.peers
         .iter()
@@ -915,7 +1008,11 @@ pub fn clean_transfers_dir(state_path: &Path) {
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map(|e| e == "gz" || e == "tar").unwrap_or(false) {
+            if path
+                .extension()
+                .map(|e| e == "gz" || e == "tar")
+                .unwrap_or(false)
+            {
                 let _ = std::fs::remove_file(&path);
             }
         }

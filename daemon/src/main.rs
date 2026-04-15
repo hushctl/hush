@@ -31,11 +31,11 @@ use tokio::sync::{broadcast, RwLock};
 use tracing::info;
 
 use crate::git_watcher::GitWatcher;
+use crate::peer_upgrade::{new_inbound_upgrades, InboundUpgrades};
 use crate::protocol::ServerMessage;
 use crate::pty::PtyManager;
 use crate::state::{DaemonState, PeerInfo};
-use crate::peer_upgrade::{InboundUpgrades, new_inbound_upgrades};
-use crate::transfer::{InboundTransfers, new_inbound_transfers};
+use crate::transfer::{new_inbound_transfers, InboundTransfers};
 
 #[derive(clap::Subcommand)]
 enum SubCommand {
@@ -158,7 +158,10 @@ async fn main() {
             let action = action.as_ref().unwrap_or(&TrustAction::Install);
             let result = match action {
                 TrustAction::Install => trust::install(&hush_dir),
-                TrustAction::Export => { trust::export(&hush_dir); Ok(()) }
+                TrustAction::Export => {
+                    trust::export(&hush_dir);
+                    Ok(())
+                }
                 TrustAction::Uninstall => trust::uninstall(&hush_dir),
             };
             if let Err(e) = result {
@@ -267,7 +270,12 @@ async fn main() {
         .and_then(|p| p.parent().map(|d| d.join("hush-hook")))
         .unwrap_or_else(|| PathBuf::from("hush-hook"));
 
-    let pty_manager = PtyManager::new(tx.clone(), machine_id.clone(), hook_socket.clone(), hush_hook_path);
+    let pty_manager = PtyManager::new(
+        tx.clone(),
+        machine_id.clone(),
+        hook_socket.clone(),
+        hush_hook_path,
+    );
     let git_watcher = GitWatcher::new(tx.clone(), machine_id.clone());
 
     hooks::spawn_listener(
@@ -306,16 +314,48 @@ async fn main() {
         .route("/health", get(|| async { "ok" }))
         .with_state(app_state);
 
+    // Serve the built UI as a fallback — if a UI dir is found, any request
+    // that isn't /ws or /health gets the SPA (with index.html fallback for
+    // client-side routing).
+    let app = if let Some(ui_dir) = resolve_ui_dir() {
+        info!("Serving UI from {}", ui_dir.display());
+        let serve_dir = tower_http::services::ServeDir::new(&ui_dir).fallback(
+            tower_http::services::ServeFile::new(ui_dir.join("index.html")),
+        );
+        app.fallback_service(serve_dir)
+    } else {
+        info!("No UI directory found — run `make build-ui` or set $HUSH_UI_DIR");
+        app
+    };
+
     let addr = format!("{}:{}", args.bind, args.port);
 
     // Load or generate self-signed TLS cert.
     // --tls-dir overrides the default (state file dir) so two daemons on the
     // same machine can share the already-trusted CA.
-    let tls_hush_dir = args.tls_dir
+    let tls_hush_dir = args
+        .tls_dir
         .as_deref()
         .unwrap_or_else(|| state_path.parent().unwrap_or(std::path::Path::new(".")));
     let tls_material = tls::load_or_generate(tls_hush_dir, &machine_id)
         .expect("Failed to load/generate TLS certificate");
+
+    // Auto-trust CA on first boot so browsers just work.
+    if !trust::is_trusted(tls_hush_dir) {
+        let ca_cert_path = tls_hush_dir.join("tls").join("ca.crt");
+        if ca_cert_path.exists() {
+            info!("First run — installing CA into OS trust store (may prompt for password)...");
+            match trust::install_ca(&ca_cert_path) {
+                Ok(()) => {
+                    trust::write_trusted_marker(tls_hush_dir);
+                    info!("✓ CA trusted — browsers will accept Hush certificates");
+                }
+                Err(e) => {
+                    info!("CA trust install failed: {e} — run `hush trust` manually if needed");
+                }
+            }
+        }
+    }
 
     // Derive a useful host for the browser hint — prefer the advertise URL's host over 0.0.0.0
     let hint_host = if !advertise_url.is_empty() {
@@ -329,7 +369,7 @@ async fn main() {
     };
     info!("Hush Daemon listening on wss://{addr}/ws");
     info!("  Cert fingerprint (SHA-256): {}", tls_material.fingerprint);
-    info!("  Browser: visit https://{hint_host}/health once to trust the self-signed cert");
+    info!("  Open https://{hint_host} in your browser");
 
     let rustls_config = RustlsConfig::from_pem(tls_material.cert_pem, tls_material.key_pem)
         .await
@@ -350,6 +390,53 @@ async fn main() {
         .expect("Server error");
 
     info!("Daemon shut down");
+}
+
+/// Find the built UI directory. Checks (in order):
+/// 1. `$HUSH_UI_DIR` environment variable
+/// 2. `{binary_dir}/../ui/dist/` (dev layout — binary in daemon/target/debug/)
+/// 3. `{binary_dir}/ui/` (installed layout — binary + ui side by side)
+/// 4. `~/.hush/ui/` (make install target)
+fn resolve_ui_dir() -> Option<std::path::PathBuf> {
+    // Explicit override
+    if let Ok(dir) = std::env::var("HUSH_UI_DIR") {
+        let p = std::path::PathBuf::from(dir);
+        if p.join("index.html").exists() {
+            return Some(p);
+        }
+    }
+
+    // Relative to binary
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            // Dev: daemon/target/debug/hush → repo/ui/dist/
+            let dev = bin_dir
+                .join("..")
+                .join("..")
+                .join("..")
+                .join("ui")
+                .join("dist");
+            if dev.join("index.html").exists() {
+                return Some(dev.canonicalize().unwrap_or(dev));
+            }
+
+            // Installed: ~/.local/bin/hush + ~/.local/bin/ui/
+            let installed = bin_dir.join("ui");
+            if installed.join("index.html").exists() {
+                return Some(installed);
+            }
+        }
+    }
+
+    // ~/.hush/ui/
+    if let Some(home) = dirs::home_dir() {
+        let hush_ui = home.join(".hush").join("ui");
+        if hush_ui.join("index.html").exists() {
+            return Some(hush_ui);
+        }
+    }
+
+    None
 }
 
 async fn ws_handler(

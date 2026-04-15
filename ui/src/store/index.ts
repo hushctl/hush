@@ -1,26 +1,31 @@
-import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
-import type { AppState, DaemonConfig, Panel, PanelKind } from './types'
-import type { ServerMessage, WorktreeInfo, ClientMessage, PeerInfo } from '@/lib/protocol'
-import { ptyBus, decodeBase64 } from '@/lib/ptyBus'
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import type { AppState, DaemonConfig, Panel, PanelKind } from "./types";
+import type {
+  ServerMessage,
+  WorktreeInfo,
+  ClientMessage,
+  PeerInfo,
+} from "@/lib/protocol";
+import { ptyBus, decodeBase64, extractLastLine } from "@/lib/ptyBus";
 
 const PANEL_DEFAULTS: Record<PanelKind, { width: number; height: number }> = {
   terminal: { width: 720, height: 480 },
   shell: { width: 600, height: 400 },
   file_rail: { width: 260, height: 520 },
   worktree_list: { width: 240, height: 400 },
-}
+};
 
 /** Namespace a raw daemon ID to a globally-unique key */
 export function nsKey(machineId: string, rawId: string): string {
-  return `${machineId}:${rawId}`
+  return `${machineId}:${rawId}`;
 }
 
 /** Split a namespaced key back into [machineId, rawId] */
 export function splitKey(key: string): [string, string] {
-  const idx = key.indexOf(':')
-  if (idx === -1) return ['', key]
-  return [key.slice(0, idx), key.slice(idx + 1)]
+  const idx = key.indexOf(":");
+  if (idx === -1) return ["", key];
+  return [key.slice(0, idx), key.slice(idx + 1)];
 }
 
 /**
@@ -28,20 +33,20 @@ export function splitKey(key: string): [string, string] {
  * Called after panel add/remove so the layout stays reflowed.
  */
 function tidyIfAuto(get: () => AppState) {
-  const s = get()
-  if (!s.canvas.autoTidy) return
-  const { w, h } = s.canvasSize
-  if (w === 0 || h === 0) return
-  s.arrangePanels(w, h)
+  const s = get();
+  if (!s.canvas.autoTidy) return;
+  const { w, h } = s.canvasSize;
+  if (w === 0 || h === 0) return;
+  s.arrangePanels(w, h);
 }
 
 /** Default localhost daemon — used when no daemons are persisted */
 const LOCALHOST_DAEMON: DaemonConfig = {
-  id: 'localhost',
-  name: 'localhost',
-  url: 'wss://localhost:9111/ws',
+  id: "localhost",
+  name: "localhost",
+  url: "wss://localhost:9111/ws",
   connected: false,
-}
+};
 
 export const useStore = create<AppState>()(
   persist(
@@ -52,23 +57,25 @@ export const useStore = create<AppState>()(
       // ── Daemon data ────────────────────────────────────────────────────────
       projects: {},
       worktrees: {},
+      lastLines: {},
+      shellAlive: {},
 
       // ── UI state ───────────────────────────────────────────────────────────
-      layoutMode: 'grid',
+      layoutMode: "grid",
       canvas: { panels: [], nextZ: 0, autoTidy: true },
       canvasSize: { w: 0, h: 0 },
       activePanes: [],
       selectedWorktreeId: null,
       selectedProjectId: null,
-      tileMode: '1-up',
+      tileMode: "1-up",
       daemonError: null,
       pendingCreate: null,
       memoryAlerts: {},
       selectedDaemonId: null,
       memorySamples: {},
-      modelStatus: 'idle',
+      modelStatus: "idle",
       modelProgress: 0,
-      modelProgressFile: '',
+      modelProgressFile: "",
 
       // ── File viewer state ──────────────────────────────────────────────────
       gitStatus: {},
@@ -82,7 +89,7 @@ export const useStore = create<AppState>()(
 
       // ── WebSocket send (injected by hook) ──────────────────────────────────
       send: (_machineId: string, _msg: ClientMessage) => {
-        console.warn('WebSocket not connected yet')
+        console.warn("WebSocket not connected yet");
       },
 
       // ── Actions ────────────────────────────────────────────────────────────
@@ -90,19 +97,19 @@ export const useStore = create<AppState>()(
       clearPendingCreate: () => set({ pendingCreate: null }),
 
       setDaemonConnected: (machineId, connected) =>
-        set(state => {
-          const daemon = state.daemons[machineId]
-          if (!daemon) return {}
+        set((state) => {
+          const daemon = state.daemons[machineId];
+          if (!daemon) return {};
           return {
             daemons: {
               ...state.daemons,
               [machineId]: { ...daemon, connected },
             },
-          }
+          };
         }),
 
       addDaemon: (config) =>
-        set(state => ({
+        set((state) => ({
           daemons: {
             ...state.daemons,
             [config.id]: { ...config, connected: false },
@@ -110,248 +117,315 @@ export const useStore = create<AppState>()(
         })),
 
       removeDaemon: (machineId) =>
-        set(state => {
-          const { [machineId]: _removed, ...rest } = state.daemons
+        set((state) => {
+          const { [machineId]: _removed, ...rest } = state.daemons;
           // Also remove all projects/worktrees from that machine
           const projects = Object.fromEntries(
-            Object.entries(state.projects).filter(([k]) => !k.startsWith(machineId + ':'))
-          )
+            Object.entries(state.projects).filter(
+              ([k]) => !k.startsWith(machineId + ":"),
+            ),
+          );
           const worktrees = Object.fromEntries(
-            Object.entries(state.worktrees).filter(([k]) => !k.startsWith(machineId + ':'))
-          )
-          return { daemons: rest, projects, worktrees }
+            Object.entries(state.worktrees).filter(
+              ([k]) => !k.startsWith(machineId + ":"),
+            ),
+          );
+          return { daemons: rest, projects, worktrees };
         }),
 
       setSend: (fn) => set({ send: fn }),
 
       mergeDiscoveredPeers: (peers: PeerInfo[]) => {
-        set(state => {
-          const updated = { ...state.daemons }
-          const knownUrls = new Set(Object.values(updated).map(d => d.url))
-          let changed = false
+        set((state) => {
+          const updated = { ...state.daemons };
+          const knownUrls = new Set(Object.values(updated).map((d) => d.url));
+          let changed = false;
           for (const peer of peers) {
-            if (!peer.url) continue
-            if (peer.machine_id in updated) continue  // already known by machine_id
-            if (knownUrls.has(peer.url)) continue     // already known by URL (temp entry)
+            if (!peer.url) continue;
+            if (peer.machine_id in updated) continue; // already known by machine_id
+            if (knownUrls.has(peer.url)) continue; // already known by URL (temp entry)
             updated[peer.machine_id] = {
               id: peer.machine_id,
               name: peer.machine_id,
               url: peer.url,
               connected: false,
-            }
-            knownUrls.add(peer.url)
-            changed = true
+            };
+            knownUrls.add(peer.url);
+            changed = true;
           }
-          return changed ? { daemons: updated } : {}
-        })
+          return changed ? { daemons: updated } : {};
+        });
       },
 
       resolveDaemonId: (tempId: string, realMachineId: string) => {
-        set(state => {
-          if (tempId === realMachineId) return {}
-          if (!(tempId in state.daemons)) return {}
-          const existing = state.daemons[tempId]
-          const updated = { ...state.daemons }
-          delete updated[tempId]
+        set((state) => {
+          if (tempId === realMachineId) return {};
+          if (!(tempId in state.daemons)) return {};
+          const existing = state.daemons[tempId];
+          const updated = { ...state.daemons };
+          delete updated[tempId];
           // If machine_id entry already exists (e.g. from gossip), just remove the temp entry
           if (!(realMachineId in updated)) {
-            updated[realMachineId] = { ...existing, id: realMachineId }
+            updated[realMachineId] = { ...existing, id: realMachineId };
           }
-          return { daemons: updated }
-        })
+          return { daemons: updated };
+        });
       },
 
       handleServerMessage: (raw: string) => {
-        let msg: ServerMessage
-        try { msg = JSON.parse(raw) as ServerMessage }
-        catch { return }
+        let msg: ServerMessage;
+        try {
+          msg = JSON.parse(raw) as ServerMessage;
+        } catch {
+          return;
+        }
 
-        const mid = msg.machine_id
+        const mid = msg.machine_id;
 
         switch (msg.type) {
-          case 'project_list': {
+          case "project_list": {
             // Re-key projects under ${machineId}:${rawId}
-            set(state => {
-              const projects = { ...state.projects }
+            set((state) => {
+              const projects = { ...state.projects };
               // Remove stale entries for this machine
               for (const k of Object.keys(projects)) {
-                if (k.startsWith(mid + ':')) delete projects[k]
+                if (k.startsWith(mid + ":")) delete projects[k];
               }
               for (const p of msg.projects) {
-                const key = nsKey(mid, p.id)
-                projects[key] = { ...p, id: key, machine_id: mid }
+                const key = nsKey(mid, p.id);
+                projects[key] = { ...p, id: key, machine_id: mid };
               }
-              return { projects }
-            })
+              return { projects };
+            });
 
             // If the daemon's machine_id differs from our placeholder entry
             // (i.e. we registered it as 'localhost' but the machine reports
             // a different id), update the registry key.
-            set(state => {
-              const daemons = { ...state.daemons }
+            set((state) => {
+              const daemons = { ...state.daemons };
               // Find a daemon entry whose url matches the sender and whose id
               // is a placeholder (doesn't equal mid yet).
               // We can't easily do this here without knowing the URL —
               // useDaemonConnections passes machineId as a param instead.
               // This case is handled in useDaemonConnections via onFirstMessage.
-              return { daemons }
-            })
-            break
+              return { daemons };
+            });
+            break;
           }
 
-          case 'worktree_list': {
-            set(state => {
-              const worktrees = { ...state.worktrees }
+          case "worktree_list": {
+            set((state) => {
+              const worktrees = { ...state.worktrees };
               for (const k of Object.keys(worktrees)) {
-                if (k.startsWith(mid + ':')) delete worktrees[k]
+                if (k.startsWith(mid + ":")) delete worktrees[k];
               }
               for (const w of msg.worktrees) {
-                const key = nsKey(mid, w.id)
+                const key = nsKey(mid, w.id);
                 worktrees[key] = {
                   ...w,
                   id: key,
                   // Namespace project_id so lookups vs. projects store work
                   project_id: nsKey(mid, w.project_id),
                   machine_id: mid,
-                }
+                };
               }
-              return { worktrees }
-            })
-            break
+              return { worktrees };
+            });
+            break;
           }
 
-          case 'status_change': {
-            const nsId = nsKey(mid, msg.worktree_id)
-            set(state => {
-              const wt = state.worktrees[nsId]
-              if (!wt) return {}
+          case "status_change": {
+            const nsId = nsKey(mid, msg.worktree_id);
+            set((state) => {
+              const wt = state.worktrees[nsId];
+              if (!wt) return {};
               return {
                 worktrees: {
                   ...state.worktrees,
-                  [nsId]: { ...wt, status: msg.status as WorktreeInfo['status'] },
-                }
-              }
-            })
-            break
+                  [nsId]: {
+                    ...wt,
+                    status: msg.status as WorktreeInfo["status"],
+                  },
+                },
+              };
+            });
+            break;
           }
 
-          case 'session_ended':
+          case "session_ended":
             // status already updated via status_change
-            break
+            break;
 
-          case 'pty_data': {
-            const nsId = nsKey(mid, msg.worktree_id)
-            ptyBus.emit(nsId, { kind: 'data', data: decodeBase64(msg.data) })
-            break
+          case "pty_data": {
+            const nsId = nsKey(mid, msg.worktree_id);
+            const decoded = decodeBase64(msg.data);
+            ptyBus.emit(nsId, { kind: "data", data: decoded });
+            // Extract last line for ambient preview on dot grid
+            const line = extractLastLine(decoded);
+            if (line) {
+              const prev = get().lastLines[nsId];
+              if (prev !== line) set((s) => ({ lastLines: { ...s.lastLines, [nsId]: line } }));
+            }
+            break;
           }
 
-          case 'pty_scrollback': {
-            const nsId = nsKey(mid, msg.worktree_id)
-            ptyBus.emit(nsId, { kind: 'scrollback', data: decodeBase64(msg.data) })
-            break
+          case "pty_scrollback": {
+            const nsId = nsKey(mid, msg.worktree_id);
+            ptyBus.emit(nsId, {
+              kind: "scrollback",
+              data: decodeBase64(msg.data),
+            });
+            break;
           }
 
-          case 'pty_exit': {
-            const nsId = nsKey(mid, msg.worktree_id)
-            ptyBus.emit(nsId, { kind: 'exit', code: msg.code })
-            break
+          case "pty_exit": {
+            const nsId = nsKey(mid, msg.worktree_id);
+            ptyBus.emit(nsId, { kind: "exit", code: msg.code });
+            break;
           }
 
-          case 'error': {
-            console.error('[daemon error]', msg.message, msg.worktree_id)
-            set({ daemonError: msg.message })
-            break
+          case "error": {
+            console.error("[daemon error]", msg.message, msg.worktree_id);
+            set({ daemonError: msg.message });
+            break;
           }
 
-          case 'memory_pressure': {
-            set(state => {
-              const next = { ...state.memoryAlerts }
-              if (msg.level === 'normal') {
-                delete next[msg.machine_id]
+          case "memory_pressure": {
+            set((state) => {
+              const next = { ...state.memoryAlerts };
+              if (msg.level === "normal") {
+                delete next[msg.machine_id];
               } else {
                 next[msg.machine_id] = {
                   level: msg.level,
                   availableBytes: msg.available_bytes,
                   totalBytes: msg.total_bytes,
-                }
+                };
               }
               // Push sample into ring buffer (cap 30) for sparkline
-              const prevSamples = state.memorySamples[msg.machine_id] ?? []
-              const ratio = msg.total_bytes > 0 ? msg.available_bytes / msg.total_bytes : 0
-              const newSample = { t: Date.now(), ratio }
-              const samples = [...prevSamples, newSample].slice(-30)
+              const prevSamples = state.memorySamples[msg.machine_id] ?? [];
+              const ratio =
+                msg.total_bytes > 0 ? msg.available_bytes / msg.total_bytes : 0;
+              const newSample = { t: Date.now(), ratio };
+              const samples = [...prevSamples, newSample].slice(-30);
               return {
                 memoryAlerts: next,
-                memorySamples: { ...state.memorySamples, [msg.machine_id]: samples },
-              }
-            })
-            break
+                memorySamples: {
+                  ...state.memorySamples,
+                  [msg.machine_id]: samples,
+                },
+              };
+            });
+            break;
           }
 
-          case 'peer_list': {
+          case "peer_list": {
             // Do NOT auto-connect to gossip peers — those are daemon-to-daemon
             // addresses (Tailscale IPs, etc.) that may not be browser-reachable.
             // The user explicitly registers daemons via the UI.
-            break
+            break;
           }
 
-          case 'path_not_found': {
-            set({ pendingCreate: { path: msg.path, name: msg.name, machineId: msg.machine_id } })
-            break
+          case "path_not_found": {
+            set({
+              pendingCreate: {
+                path: msg.path,
+                name: msg.name,
+                machineId: msg.machine_id,
+              },
+            });
+            break;
           }
 
-          case 'git_status': {
-            const nsId = nsKey(msg.machine_id, msg.worktree_id)
-            set(state => ({
+          case "git_status": {
+            const nsId = nsKey(msg.machine_id, msg.worktree_id);
+            set((state) => ({
               gitStatus: {
                 ...state.gitStatus,
-                [nsId]: { staged: msg.staged, modified: msg.modified, untracked: msg.untracked },
+                [nsId]: {
+                  staged: msg.staged,
+                  modified: msg.modified,
+                  untracked: msg.untracked,
+                },
               },
-            }))
-            break
+            }));
+            break;
           }
 
-          case 'file_list': {
-            const nsId = nsKey(msg.machine_id, msg.worktree_id)
-            set(state => ({
+          case "file_list": {
+            const nsId = nsKey(msg.machine_id, msg.worktree_id);
+            set((state) => ({
               fileList: { ...state.fileList, [nsId]: msg.files },
-            }))
-            break
+            }));
+            break;
           }
 
-          case 'file_content': {
-            const nsId = nsKey(msg.machine_id, msg.worktree_id)
-            set(state => ({
+          case "file_content": {
+            const nsId = nsKey(msg.machine_id, msg.worktree_id);
+            set((state) => ({
               fileContents: {
                 ...state.fileContents,
-                [nsId]: { path: msg.path, content: msg.content, truncated: msg.truncated },
+                [nsId]: {
+                  path: msg.path,
+                  content: msg.content,
+                  truncated: msg.truncated,
+                },
               },
-            }))
-            break
+            }));
+            break;
           }
 
-          case 'shell_data': {
-            const nsId = nsKey(mid, msg.worktree_id)
-            ptyBus.emit(`shell:${nsId}`, { kind: 'data', data: decodeBase64(msg.data) })
-            break
+          case "shell_data": {
+            const nsId = nsKey(mid, msg.worktree_id);
+            const sid = msg.shell_id || "0";
+            const shellDecoded = decodeBase64(msg.data);
+            // Route to the specific shell's ptyBus channel
+            ptyBus.emit(`shell:${nsId}:${sid}`, {
+              kind: "data",
+              data: shellDecoded,
+            });
+            // Track shell liveness per shell_id
+            const aliveKey = `${nsId}:${sid}`;
+            if (!get().shellAlive[aliveKey]) {
+              set((s) => ({ shellAlive: { ...s.shellAlive, [aliveKey]: true } }));
+            }
+            // Store last line per shell_id
+            const shellLine = extractLastLine(shellDecoded);
+            if (shellLine) {
+              const lineKey = `shell:${nsId}:${sid}`;
+              const prev = get().lastLines[lineKey];
+              if (prev !== lineKey) set((s) => ({ lastLines: { ...s.lastLines, [lineKey]: shellLine } }));
+            }
+            break;
           }
 
-          case 'shell_scrollback': {
-            const nsId = nsKey(mid, msg.worktree_id)
-            ptyBus.emit(`shell:${nsId}`, { kind: 'scrollback', data: decodeBase64(msg.data) })
-            break
+          case "shell_scrollback": {
+            const nsId = nsKey(mid, msg.worktree_id);
+            const sid = msg.shell_id || "0";
+            ptyBus.emit(`shell:${nsId}:${sid}`, {
+              kind: "scrollback",
+              data: decodeBase64(msg.data),
+            });
+            const aliveKey = `${nsId}:${sid}`;
+            if (!get().shellAlive[aliveKey]) {
+              set((s) => ({ shellAlive: { ...s.shellAlive, [aliveKey]: true } }));
+            }
+            break;
           }
 
-          case 'shell_exit': {
-            const nsId = nsKey(mid, msg.worktree_id)
-            ptyBus.emit(`shell:${nsId}`, { kind: 'exit', code: msg.code })
-            break
+          case "shell_exit": {
+            const nsId = nsKey(mid, msg.worktree_id);
+            const sid = msg.shell_id || "0";
+            ptyBus.emit(`shell:${nsId}:${sid}`, { kind: "exit", code: msg.code });
+            const aliveKey = `${nsId}:${sid}`;
+            set((s) => ({ shellAlive: { ...s.shellAlive, [aliveKey]: false } }));
+            break;
           }
 
-          case 'transfer_progress': {
-            set(state => {
-              const existing = state.transfers[msg.transfer_id]
-              const sourceWorktreeKey = `${msg.machine_id}:${msg.source_worktree_id}`
+          case "transfer_progress": {
+            set((state) => {
+              const existing = state.transfers[msg.transfer_id];
+              const sourceWorktreeKey = `${msg.machine_id}:${msg.source_worktree_id}`;
               return {
                 transfers: {
                   ...state.transfers,
@@ -359,176 +433,215 @@ export const useStore = create<AppState>()(
                     // Server-authoritative (always overwrite)
                     phase: msg.phase,
                     bytesSent: msg.bytes_sent,
-                    totalBytes: msg.total_bytes > 0 ? msg.total_bytes : (existing?.totalBytes ?? 0),
+                    totalBytes:
+                      msg.total_bytes > 0
+                        ? msg.total_bytes
+                        : (existing?.totalBytes ?? 0),
                     // Metadata: use existing if already known, else take from server event
                     transferId: existing?.transferId ?? msg.transfer_id,
-                    sourceMachineId: existing?.sourceMachineId ?? msg.machine_id,
-                    destMachineId: existing?.destMachineId ?? msg.dest_machine_id,
-                    sourceWorktreeKey: existing?.sourceWorktreeKey ?? sourceWorktreeKey,
+                    sourceMachineId:
+                      existing?.sourceMachineId ?? msg.machine_id,
+                    destMachineId:
+                      existing?.destMachineId ?? msg.dest_machine_id,
+                    sourceWorktreeKey:
+                      existing?.sourceWorktreeKey ?? sourceWorktreeKey,
                     projectName: existing?.projectName ?? msg.project_name,
                     branch: existing?.branch ?? msg.branch,
                     errorMessage: existing?.errorMessage,
                   },
                 },
-              }
-            })
-            break
+              };
+            });
+            break;
           }
 
-          case 'transfer_complete': {
+          case "transfer_complete": {
             // Mark complete, then remove after a short delay so the overlay can animate out
-            set(state => {
-              const existing = state.transfers[msg.transfer_id]
-              if (!existing) return {}
+            set((state) => {
+              const existing = state.transfers[msg.transfer_id];
+              if (!existing) return {};
               return {
                 transfers: {
                   ...state.transfers,
-                  [msg.transfer_id]: { ...existing, phase: 'complete' },
+                  [msg.transfer_id]: { ...existing, phase: "complete" },
                 },
-              }
-            })
+              };
+            });
             setTimeout(() => {
-              set(state => {
-                const { [msg.transfer_id]: _, ...rest } = state.transfers
-                return { transfers: rest }
-              })
-            }, 6000)
-            break
+              set((state) => {
+                const { [msg.transfer_id]: _, ...rest } = state.transfers;
+                return { transfers: rest };
+              });
+            }, 6000);
+            break;
           }
 
-          case 'transfer_error': {
-            set(state => {
-              const t = state.transfers[msg.transfer_id]
-              if (!t) return {}
+          case "transfer_error": {
+            set((state) => {
+              const t = state.transfers[msg.transfer_id];
+              if (!t) return {};
               return {
                 transfers: {
                   ...state.transfers,
-                  [msg.transfer_id]: { ...t, phase: 'failed', errorMessage: msg.message },
+                  [msg.transfer_id]: {
+                    ...t,
+                    phase: "failed",
+                    errorMessage: msg.message,
+                  },
                 },
-              }
-            })
-            console.error('[transfer error]', msg.transfer_id, msg.message)
+              };
+            });
+            console.error("[transfer error]", msg.transfer_id, msg.message);
             // Failed transfers stay visible until dismissed by the user
-            break
+            break;
           }
         }
       },
 
       selectWorktree: (id) => set({ selectedWorktreeId: id }),
 
-      openPanel: ({ kind, targetId }) => {
-        const state = get()
-        // Bring existing panel to front instead of duplicating
-        const existing = state.canvas.panels.find(p => p.kind === kind && p.targetId === targetId)
+      openPanel: ({ kind, targetId, shellId }) => {
+        const state = get();
+        // For shell panels, generate a unique shellId if not provided
+        const resolvedShellId =
+          kind === "shell" ? shellId ?? String(Date.now()) : undefined;
+        // Bring existing panel to front instead of duplicating.
+        // Shell panels match by shellId too (each shell is independent).
+        const existing = state.canvas.panels.find((p) => {
+          if (p.kind !== kind || p.targetId !== targetId) return false;
+          if (kind === "shell") return p.shellId === resolvedShellId;
+          return true;
+        });
         if (existing) {
-          const nextZ = state.canvas.nextZ
-          const panels = state.canvas.panels.map(p =>
-            p.id === existing.id ? { ...p, z: nextZ } : p
-          )
+          const nextZ = state.canvas.nextZ;
+          const panels = state.canvas.panels.map((p) =>
+            p.id === existing.id ? { ...p, z: nextZ } : p,
+          );
           set({
             canvas: { ...state.canvas, panels, nextZ: nextZ + 1 },
-            layoutMode: 'canvas',
-            selectedWorktreeId: kind === 'terminal' ? targetId : state.selectedWorktreeId,
-          })
-          return
+            layoutMode: "canvas",
+            selectedWorktreeId:
+              kind === "terminal" ? targetId : state.selectedWorktreeId,
+          });
+          return;
         }
-        const n = state.canvas.panels.length
-        const { width, height } = PANEL_DEFAULTS[kind]
-        const z = state.canvas.nextZ
-        const { w: cw, h: ch } = state.canvasSize
-        const pw = cw > 0 ? Math.min(width, cw) : width
-        const ph = ch > 0 ? Math.min(height, ch) : height
-        const rawX = Math.round((40 + 30 * (n % 10)) / 8) * 8
-        const rawY = Math.round((40 + 30 * (n % 10)) / 8) * 8
+        const n = state.canvas.panels.length;
+        const { width, height } = PANEL_DEFAULTS[kind];
+        const z = state.canvas.nextZ;
+        const { w: cw, h: ch } = state.canvasSize;
+        const pw = cw > 0 ? Math.min(width, cw) : width;
+        const ph = ch > 0 ? Math.min(height, ch) : height;
+        const rawX = Math.round((40 + 30 * (n % 10)) / 8) * 8;
+        const rawY = Math.round((40 + 30 * (n % 10)) / 8) * 8;
         const newPanel: Panel = {
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           kind,
           targetId,
+          shellId: resolvedShellId,
           x: cw > 0 ? Math.min(rawX, cw - pw) : rawX,
           y: ch > 0 ? Math.min(rawY, ch - ph) : rawY,
           width: pw,
           height: ph,
           z,
-        }
-        const newActivePanes = kind === 'terminal'
-          ? [...state.activePanes.filter(id => id !== targetId), targetId]
-          : state.activePanes
+        };
+        const newActivePanes =
+          kind === "terminal"
+            ? [...state.activePanes.filter((id) => id !== targetId), targetId]
+            : state.activePanes;
         set({
-          canvas: { ...state.canvas, panels: [...state.canvas.panels, newPanel], nextZ: z + 1 },
-          layoutMode: 'canvas',
+          canvas: {
+            ...state.canvas,
+            panels: [...state.canvas.panels, newPanel],
+            nextZ: z + 1,
+          },
+          layoutMode: "canvas",
           activePanes: newActivePanes,
-          selectedWorktreeId: kind === 'terminal' ? targetId : state.selectedWorktreeId,
-        })
-        tidyIfAuto(get)
+          selectedWorktreeId:
+            kind === "terminal" ? targetId : state.selectedWorktreeId,
+        });
+        tidyIfAuto(get);
       },
 
       closePanel: (id) => {
-        const state = get()
-        const panel = state.canvas.panels.find(p => p.id === id)
-        const newPanels = state.canvas.panels.filter(p => p.id !== id)
-        const newActivePanes = panel?.kind === 'terminal'
-          ? state.activePanes.filter(wtId => wtId !== panel.targetId)
-          : state.activePanes
+        const state = get();
+        const panel = state.canvas.panels.find((p) => p.id === id);
+        const newPanels = state.canvas.panels.filter((p) => p.id !== id);
+        const newActivePanes =
+          panel?.kind === "terminal"
+            ? state.activePanes.filter((wtId) => wtId !== panel.targetId)
+            : state.activePanes;
         set({
           canvas: { ...state.canvas, panels: newPanels },
           activePanes: newActivePanes,
-          layoutMode: newPanels.length === 0 ? 'grid' : state.layoutMode,
-        })
-        tidyIfAuto(get)
+          layoutMode: newPanels.length === 0 ? "grid" : state.layoutMode,
+        });
+        tidyIfAuto(get);
       },
 
       movePanel: (id, x, y) => {
-        const state = get()
-        const panels = state.canvas.panels.map(p =>
-          p.id === id ? { ...p, x: Math.max(0, x), y: Math.max(0, y) } : p
-        )
+        const state = get();
+        const panels = state.canvas.panels.map((p) =>
+          p.id === id ? { ...p, x: Math.max(0, x), y: Math.max(0, y) } : p,
+        );
         // User-initiated move disables auto-tidy so their layout isn't clobbered.
-        set({ canvas: { ...state.canvas, panels, autoTidy: false } })
+        set({ canvas: { ...state.canvas, panels, autoTidy: false } });
       },
 
       resizePanel: (id, width, height) => {
-        const state = get()
-        const panels = state.canvas.panels.map(p =>
+        const state = get();
+        const panels = state.canvas.panels.map((p) =>
           p.id === id
-            ? { ...p, width: Math.max(200, width), height: Math.max(120, height) }
-            : p
-        )
-        set({ canvas: { ...state.canvas, panels, autoTidy: false } })
+            ? {
+                ...p,
+                width: Math.max(200, width),
+                height: Math.max(120, height),
+              }
+            : p,
+        );
+        set({ canvas: { ...state.canvas, panels, autoTidy: false } });
       },
 
       focusPanel: (id) => {
-        const state = get()
-        const nextZ = state.canvas.nextZ
-        const panels = state.canvas.panels.map(p =>
-          p.id === id ? { ...p, z: nextZ } : p
-        )
-        set({ canvas: { panels, nextZ: nextZ + 1 } })
+        const state = get();
+        const nextZ = state.canvas.nextZ;
+        const panels = state.canvas.panels.map((p) =>
+          p.id === id ? { ...p, z: nextZ } : p,
+        );
+        set({ canvas: { ...state.canvas, panels, nextZ: nextZ + 1 } });
       },
 
       arrangePanels: (canvasW, canvasH) => {
-        const state = get()
-        const panels = state.canvas.panels
-        if (panels.length === 0) return
+        const state = get();
+        const panels = state.canvas.panels;
+        if (panels.length === 0) return;
 
-        const GAP = 8
-        const NARROW_W = 240  // fixed width for file viewers, like an IDE sidebar
+        const GAP = 8;
+        const NARROW_W = 240; // fixed width for file viewers, like an IDE sidebar
 
-        const isNarrow = (kind: string) => kind === 'file_rail' || kind === 'worktree_list'
+        const isNarrow = (kind: string) =>
+          kind === "file_rail" || kind === "worktree_list";
 
-        const narrows = panels.filter(p => isNarrow(p.kind))
-        const wides   = panels.filter(p => !isNarrow(p.kind))
+        const narrows = panels.filter((p) => isNarrow(p.kind));
+        const wides = panels.filter((p) => !isNarrow(p.kind));
 
         // Sort wides: group by targetId so same-worktree panels are adjacent
-        wides.sort((a, b) => a.targetId.localeCompare(b.targetId))
+        wides.sort((a, b) => a.targetId.localeCompare(b.targetId));
         // Sort narrows: worktree_list before file_rail
-        narrows.sort((a, b) => (a.kind === 'worktree_list' ? -1 : 1) - (b.kind === 'worktree_list' ? -1 : 1))
+        narrows.sort(
+          (a, b) =>
+            (a.kind === "worktree_list" ? -1 : 1) -
+            (b.kind === "worktree_list" ? -1 : 1),
+        );
 
-        const arranged: typeof panels = []
+        const arranged: typeof panels = [];
 
         // ── Narrow panels: fixed-width left column, each capped at half height ──
         if (narrows.length > 0) {
-          const maxCellH = Math.floor(canvasH / 2)
-          const cellH = Math.min(maxCellH, Math.floor((canvasH - GAP * (narrows.length + 1)) / narrows.length))
+          const maxCellH = Math.floor(canvasH / 2);
+          const cellH = Math.min(
+            maxCellH,
+            Math.floor((canvasH - GAP * (narrows.length + 1)) / narrows.length),
+          );
           narrows.forEach((p, i) => {
             arranged.push({
               ...p,
@@ -536,106 +649,125 @@ export const useStore = create<AppState>()(
               y: GAP + i * (cellH + GAP),
               width: NARROW_W,
               height: cellH,
-            })
-          })
+            });
+          });
         }
 
         // ── Wide panels: fill remaining area in a grid ────────────────────────
         if (wides.length > 0) {
-          const xOffset = narrows.length > 0 ? GAP + NARROW_W + GAP : 0
-          const areaW = canvasW - xOffset
-          const n = wides.length
+          const xOffset = narrows.length > 0 ? GAP + NARROW_W + GAP : 0;
+          const areaW = canvasW - xOffset;
+          const n = wides.length;
 
           // Pick cols to make cells closest to 16:9
-          let bestCols = 1, bestScore = Infinity
+          let bestCols = 1,
+            bestScore = Infinity;
           for (let c = 1; c <= n; c++) {
-            const r = Math.ceil(n / c)
-            const aspect = (areaW - GAP * (c + 1)) / c / ((canvasH - GAP * (r + 1)) / r)
-            const score = Math.abs(aspect - 16 / 9)
-            if (score < bestScore) { bestScore = score; bestCols = c }
+            const r = Math.ceil(n / c);
+            const aspect =
+              (areaW - GAP * (c + 1)) / c / ((canvasH - GAP * (r + 1)) / r);
+            const score = Math.abs(aspect - 16 / 9);
+            if (score < bestScore) {
+              bestScore = score;
+              bestCols = c;
+            }
           }
-          const cols = bestCols
-          const rows = Math.ceil(n / cols)
-          const cellW = Math.floor((areaW - GAP * (cols + 1)) / cols)
-          const cellH = Math.floor((canvasH - GAP * (rows + 1)) / rows)
+          const cols = bestCols;
+          const rows = Math.ceil(n / cols);
+          const cellW = Math.floor((areaW - GAP * (cols + 1)) / cols);
+          const cellH = Math.floor((canvasH - GAP * (rows + 1)) / rows);
 
           wides.forEach((p, i) => {
-            const col = i % cols
-            const row = Math.floor(i / cols)
+            const col = i % cols;
+            const row = Math.floor(i / cols);
             arranged.push({
               ...p,
               x: xOffset + GAP + col * (cellW + GAP),
               y: GAP + row * (cellH + GAP),
               width: cellW,
               height: cellH,
-            })
-          })
+            });
+          });
         }
 
-        set({ canvas: { ...state.canvas, panels: arranged } })
+        set({ canvas: { ...state.canvas, panels: arranged } });
       },
 
       setCanvasSize: (w, h) => {
-        if (w === 0 || h === 0) return
+        if (w === 0 || h === 0) return;
         // Clamp all persisted panel positions to fit within the actual canvas bounds.
-        const panels = get().canvas.panels.map(p => {
-          const clampedH = Math.min(p.height, h)
-          const clampedW = Math.min(p.width, w)
-          const clampedY = Math.min(p.y, h - clampedH)
-          const clampedX = Math.min(p.x, w - clampedW)
-          return { ...p, x: Math.max(0, clampedX), y: Math.max(0, clampedY), width: clampedW, height: clampedH }
-        })
-        set({ canvasSize: { w, h }, canvas: { ...get().canvas, panels } })
+        const panels = get().canvas.panels.map((p) => {
+          const clampedH = Math.min(p.height, h);
+          const clampedW = Math.min(p.width, w);
+          const clampedY = Math.min(p.y, h - clampedH);
+          const clampedX = Math.min(p.x, w - clampedW);
+          return {
+            ...p,
+            x: Math.max(0, clampedX),
+            y: Math.max(0, clampedY),
+            width: clampedW,
+            height: clampedH,
+          };
+        });
+        set({ canvasSize: { w, h }, canvas: { ...get().canvas, panels } });
       },
 
       openPane: (worktreeId) => {
-        get().openPanel({ kind: 'terminal', targetId: worktreeId })
+        get().openPanel({ kind: "terminal", targetId: worktreeId });
       },
 
       closePane: (worktreeId) => {
-        const state = get()
+        const state = get();
         const toClose = new Set(
-          state.canvas.panels.filter(p => p.targetId === worktreeId).map(p => p.id)
-        )
-        const newPanels = state.canvas.panels.filter(p => !toClose.has(p.id))
-        const newActivePanes = state.activePanes.filter(id => id !== worktreeId)
+          state.canvas.panels
+            .filter((p) => p.targetId === worktreeId)
+            .map((p) => p.id),
+        );
+        const newPanels = state.canvas.panels.filter((p) => !toClose.has(p.id));
+        const newActivePanes = state.activePanes.filter(
+          (id) => id !== worktreeId,
+        );
         set({
           canvas: { ...state.canvas, panels: newPanels },
           activePanes: newActivePanes,
-          layoutMode: newPanels.length === 0 ? 'grid' : state.layoutMode,
+          layoutMode: newPanels.length === 0 ? "grid" : state.layoutMode,
           selectedWorktreeId: newActivePanes[newActivePanes.length - 1] ?? null,
-        })
-        tidyIfAuto(get)
+        });
+        tidyIfAuto(get);
       },
 
       setAutoTidy: (enabled) => {
-        set(state => ({ canvas: { ...state.canvas, autoTidy: enabled } }))
-        if (enabled) tidyIfAuto(get)
+        set((state) => ({ canvas: { ...state.canvas, autoTidy: enabled } }));
+        if (enabled) tidyIfAuto(get);
       },
 
       setTileMode: (mode) => set({ tileMode: mode }),
 
-      switchToGrid: () => set({ layoutMode: 'grid' }),
-      switchToCanvas: () => set({ layoutMode: 'canvas' }),
-      switchToPanes: () => set({ layoutMode: 'canvas' }),
+      switchToGrid: () => set({ layoutMode: "grid" }),
+      switchToCanvas: () => set({ layoutMode: "canvas" }),
+      switchToPanes: () => set({ layoutMode: "canvas" }),
 
       openProjectTree: (projectId) => {
-        set({ selectedProjectId: projectId })
-        get().openPanel({ kind: 'worktree_list', targetId: projectId })
+        set({ selectedProjectId: projectId });
+        get().openPanel({ kind: "worktree_list", targetId: projectId });
       },
 
       openFileContent: (worktreeId, path, content, truncated) =>
-        set(state => ({
-          fileContents: { ...state.fileContents, [worktreeId]: { path, content, truncated } },
+        set((state) => ({
+          fileContents: {
+            ...state.fileContents,
+            [worktreeId]: { path, content, truncated },
+          },
         })),
 
       clearFileContent: (worktreeId) =>
-        set(state => {
-          const { [worktreeId]: _removed, ...rest } = state.fileContents
-          return { fileContents: rest }
+        set((state) => {
+          const { [worktreeId]: _removed, ...rest } = state.fileContents;
+          return { fileContents: rest };
         }),
 
-      openCmdP: (worktreeId) => set({ cmdPOpen: true, cmdPTargetWorktree: worktreeId }),
+      openCmdP: (worktreeId) =>
+        set({ cmdPOpen: true, cmdPTargetWorktree: worktreeId }),
 
       closeCmdP: () => set({ cmdPOpen: false, cmdPTargetWorktree: null }),
 
@@ -645,34 +777,35 @@ export const useStore = create<AppState>()(
 
       setModelStatus: (status) => set({ modelStatus: status }),
 
-      setModelProgress: (progress, file) => set({ modelProgress: progress, modelProgressFile: file }),
+      setModelProgress: (progress, file) =>
+        set({ modelProgress: progress, modelProgressFile: file }),
 
       dismissTransfer: (transferId) =>
-        set(state => {
-          const { [transferId]: _, ...rest } = state.transfers
-          return { transfers: rest }
+        set((state) => {
+          const { [transferId]: _, ...rest } = state.transfers;
+          return { transfers: rest };
         }),
     }),
     {
-      name: 'mc-ui-prefs',
+      name: "mc-ui-prefs",
       version: 2,
       // v1: migrate ws:// → wss:// in persisted daemon URLs
       // v2: default canvas.autoTidy for existing users
       migrate: (persisted: unknown, fromVersion: number) => {
-        const s = persisted as Record<string, unknown>
-        if (fromVersion < 1 && s?.daemons && typeof s.daemons === 'object') {
-          const daemons = s.daemons as Record<string, { url?: string }>
+        const s = persisted as Record<string, unknown>;
+        if (fromVersion < 1 && s?.daemons && typeof s.daemons === "object") {
+          const daemons = s.daemons as Record<string, { url?: string }>;
           for (const d of Object.values(daemons)) {
-            if (typeof d.url === 'string' && d.url.startsWith('ws://')) {
-              d.url = d.url.replace('ws://', 'wss://')
+            if (typeof d.url === "string" && d.url.startsWith("ws://")) {
+              d.url = d.url.replace("ws://", "wss://");
             }
           }
         }
-        if (fromVersion < 2 && s?.canvas && typeof s.canvas === 'object') {
-          const canvas = s.canvas as Record<string, unknown>
-          if (typeof canvas.autoTidy !== 'boolean') canvas.autoTidy = true
+        if (fromVersion < 2 && s?.canvas && typeof s.canvas === "object") {
+          const canvas = s.canvas as Record<string, unknown>;
+          if (typeof canvas.autoTidy !== "boolean") canvas.autoTidy = true;
         }
-        return s
+        return s;
       },
       // Persist layout prefs + daemon registry; data comes from daemon on every connect
       partialize: (state) => ({
@@ -684,9 +817,12 @@ export const useStore = create<AppState>()(
         selectedProjectId: state.selectedProjectId,
         // Persist daemons but reset connection status
         daemons: Object.fromEntries(
-          Object.entries(state.daemons).map(([k, v]) => [k, { ...v, connected: false }])
+          Object.entries(state.daemons).map(([k, v]) => [
+            k,
+            { ...v, connected: false },
+          ]),
         ),
       }),
-    }
-  )
-)
+    },
+  ),
+);

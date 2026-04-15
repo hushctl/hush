@@ -76,23 +76,31 @@ pub enum ClientMessage {
     /// Spawns the shell if not already running.
     ShellAttach {
         worktree_id: String,
+        #[serde(default)]
+        shell_id: String,
         cols: u16,
         rows: u16,
     },
     /// Forward keystrokes to a worktree's shell pty.
     ShellInput {
         worktree_id: String,
+        #[serde(default)]
+        shell_id: String,
         data: String,
     },
     /// Resize a worktree's shell pty.
     ShellResize {
         worktree_id: String,
+        #[serde(default)]
+        shell_id: String,
         cols: u16,
         rows: u16,
     },
     /// Kill a worktree's shell pty.
     ShellKill {
         worktree_id: String,
+        #[serde(default)]
+        shell_id: String,
     },
     ListProjects,
     ListWorktrees,
@@ -106,10 +114,15 @@ pub enum ClientMessage {
         /// Sender's daemon version (e.g. "0.9.1"). Empty for pre-version peers.
         #[serde(default)]
         version: String,
+        /// CA cert PEM — sent so joining machines can adopt the mesh CA.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ca_cert_pem: Option<String>,
+        /// CA private key PEM — sent so joining machines can sign their own leaf certs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ca_key_pem: Option<String>,
     },
 
     // ── Transfer: browser → source daemon ────────────────────────────────────
-
     /// Move a single worktree to another daemon (browser → source daemon).
     TransferWorktree {
         worktree_id: String,
@@ -126,7 +139,6 @@ pub enum ClientMessage {
     },
 
     // ── Transfer: source daemon → destination daemon ──────────────────────────
-
     /// First message: describes what is about to be transferred.
     TransferOffer {
         transfer_id: String,
@@ -161,14 +173,12 @@ pub enum ClientMessage {
     },
 
     // ── Peer upgrade: browser → source daemon ────────────────────────────────
-
     /// Browser asks this daemon to push its binary to an older peer.
     PeerUpgrade {
         dest_machine_id: String,
     },
 
     // ── Peer upgrade: source daemon → destination daemon ─────────────────────
-
     /// Source daemon offers its binary to the destination.
     UpgradeOffer {
         upgrade_id: String,
@@ -257,10 +267,15 @@ pub enum ServerMessage {
         /// Sender's daemon version (e.g. "0.9.1").
         #[serde(default)]
         version: String,
+        /// CA cert PEM — sent so joining machines can adopt the mesh CA.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ca_cert_pem: Option<String>,
+        /// CA private key PEM — sent so joining machines can sign their own leaf certs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ca_key_pem: Option<String>,
     },
 
     // ── Peer upgrade responses (destination → source) ─────────────────────────
-
     /// Destination is ready to receive upgrade binary frames.
     UpgradeAck {
         machine_id: String,
@@ -313,23 +328,25 @@ pub enum ServerMessage {
     ShellData {
         machine_id: String,
         worktree_id: String,
+        shell_id: String,
         data: String,
     },
     /// Scrollback replay sent in response to ShellAttach.
     ShellScrollback {
         machine_id: String,
         worktree_id: String,
+        shell_id: String,
         data: String,
     },
     /// Shell pty process has exited.
     ShellExit {
         machine_id: String,
         worktree_id: String,
+        shell_id: String,
         code: Option<i32>,
     },
 
     // ── Transfer responses ────────────────────────────────────────────────────
-
     /// Destination accepted the offer and reserved dest_path.
     TransferAck {
         machine_id: String,
@@ -384,4 +401,7 @@ pub struct WorktreeInfo {
     pub last_task: Option<String>,
     pub session_id: Option<String>,
     pub machine_id: String,
+    /// Whether a shell pty is currently alive for this worktree.
+    #[serde(default)]
+    pub shell_alive: bool,
 }

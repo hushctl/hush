@@ -9,13 +9,17 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// If the binary directory is not writable (e.g. `/usr/local/bin`), falls back
 /// to `~/.hush/bin/` so the upgrade can succeed without root.
 /// Returns the list of binary paths that were updated.
-pub fn apply_archive(tarball_path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+pub fn apply_archive(
+    tarball_path: &Path,
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
     let tarball = std::fs::File::open(tarball_path)?;
     let decoder = flate2::read::GzDecoder::new(tarball);
     let mut archive = tar::Archive::new(decoder);
 
     let cur_exe = std::env::current_exe()?;
-    let cur_bin_dir = cur_exe.parent().ok_or("cannot determine binary directory")?;
+    let cur_bin_dir = cur_exe
+        .parent()
+        .ok_or("cannot determine binary directory")?;
 
     // If the binary directory is not writable (system install), fall back to
     // ~/.hush/bin/ so an unprivileged daemon can still replace itself.
@@ -65,7 +69,9 @@ pub fn apply_archive(tarball_path: &Path) -> Result<Vec<String>, Box<dyn std::er
     }
 
     if updated.is_empty() {
-        return Err("archive contained no recognised binaries (expected 'hush' and/or 'hush-hook')".into());
+        return Err(
+            "archive contained no recognised binaries (expected 'hush' and/or 'hush-hook')".into(),
+        );
     }
 
     Ok(updated)
@@ -74,7 +80,10 @@ pub fn apply_archive(tarball_path: &Path) -> Result<Vec<String>, Box<dyn std::er
 fn is_dir_writable(dir: &Path) -> bool {
     let probe = dir.join(".hush_write_probe");
     match std::fs::File::create(&probe) {
-        Ok(_) => { let _ = std::fs::remove_file(&probe); true }
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
         Err(_) => false,
     }
 }
@@ -107,13 +116,9 @@ async fn do_upgrade() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("hush v{CURRENT_VERSION} — checking for updates...");
 
     // Fetch latest release tag.
-    let json = run_gh(&[
-        "release", "view",
-        "--repo", REPO,
-        "--json", "tagName",
-    ])
-    .await
-    .map_err(|e| format!("failed to fetch latest release: {e}"))?;
+    let json = run_gh(&["release", "view", "--repo", REPO, "--json", "tagName"])
+        .await
+        .map_err(|e| format!("failed to fetch latest release: {e}"))?;
 
     let tag: serde_json::Value = serde_json::from_str(&json)?;
     let tag_name = tag["tagName"]
@@ -135,10 +140,15 @@ async fn do_upgrade() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     std::fs::create_dir_all(&tmpdir)?;
 
     let download_result = run_gh(&[
-        "release", "download", tag_name,
-        "--repo", REPO,
-        "--pattern", &asset_name,
-        "--dir", tmpdir.to_str().ok_or("tempdir path is not valid UTF-8")?,
+        "release",
+        "download",
+        tag_name,
+        "--repo",
+        REPO,
+        "--pattern",
+        &asset_name,
+        "--dir",
+        tmpdir.to_str().ok_or("tempdir path is not valid UTF-8")?,
     ])
     .await;
 

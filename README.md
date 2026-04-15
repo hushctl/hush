@@ -1,112 +1,85 @@
 # Hush
 
-A browser-based command center for Claude Code. Run Claude Code sessions on one or more machines and control all of them from a single browser tab.
+One screen for all your Claude Code sessions, across all your machines.
+
+<!-- Re-record with: make demo -->
+![Hush demo](docs/demo.gif)
+
+Run Claude Code on your laptop, your desktop, your cloud box — and control all of them from a single browser tab. Hush gives you a spatial canvas where every session on every machine is visible at a glance.
+
+- **Multi-session orchestration** — Run N Claude Code sessions in parallel. Status dots (green/amber/red) tell you where your attention is needed.
+- **Multi-machine mesh** — Each machine runs a daemon. Daemons discover each other via gossip. Open one browser tab, see everything.
+- **Sessions survive disconnects** — Close your laptop, Claude keeps working. Reconnect later, scrollback replays automatically.
+- **P2P upgrades** — Build once, propagate to the whole mesh. No CI, no GitHub access needed on receiving machines.
 
 ---
 
-## Install
+## Quick start
 
-Build from source (requires Rust):
+### Prerequisites
 
-```sh
-git clone https://github.com/kushalhalder/hush
-cd hush/daemon
-cargo build --release
-```
-
-Copy the binaries to a user-writable directory on your PATH. `~/.local/bin/` is recommended — it works on both macOS and Linux without requiring root:
-
-```sh
-mkdir -p ~/.local/bin
-cp target/release/hush target/release/hush-hook ~/.local/bin/
-```
-
-### Add `~/.local/bin` to your PATH
-
-**zsh** (`~/.zshrc`):
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-**bash** (`~/.bashrc` or `~/.bash_profile`):
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-After editing, reload your shell: `source ~/.zshrc` (or open a new terminal).
-
-> **Why not `/usr/local/bin/`?**
-> On Apple Silicon Macs, `/usr/local/bin/` is owned by root. Installing there requires `sudo` and blocks P2P auto-upgrades — `hush` can't replace its own binary when running as a normal user.
-
----
-
-## Prerequisites
-
+- [Rust](https://rustup.rs/) (for building)
+- [Node.js](https://nodejs.org/) 18+ (for building the UI)
 - [Claude Code CLI](https://claude.ai/code) (`claude` must be on your PATH)
 
----
-
-## Single machine (local)
-
-**1. Trust the local CA** (once per machine)
+### Build and install
 
 ```sh
-hush trust
+git clone https://github.com/nicholasgasior/hush
+cd hush
+make install
 ```
 
-This installs Hush's self-signed CA into your OS trust store so browsers automatically trust the daemon's TLS cert.
+This builds the daemon + UI and installs to `~/.local/bin/` and `~/.hush/ui/`.
 
-**2. Start the daemon**
+Add `~/.local/bin` to your PATH if it isn't already:
+
+```sh
+# Add to ~/.zshrc or ~/.bashrc
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Run
 
 ```sh
 hush
 ```
 
-Listens on `0.0.0.0:9111` by default. State is persisted to `~/.hush/state.json`.
+On first run, Hush generates a TLS certificate authority and installs it into your OS trust store (macOS will prompt for your password once). After that, open **https://localhost:9111** in your browser.
 
-**3. Open the UI**
-
-For development: `cd ui && npm run dev` — opens at http://localhost:5173
-
-**4. Add a project**
-
-Click **+ project** in the command bar, enter the path to a Git repo, then enter a branch name (e.g. `main`). A Claude Code session starts — click the dot on the grid to open a terminal pane.
+Click **+ project** in the command bar, enter the path to a Git repo, then enter a branch name. A Claude Code session starts — click the dot on the grid to open a terminal pane.
 
 ---
 
-## Multiple machines over Tailscale
+## Multiple machines
 
-Each machine runs its own `hush` daemon. The browser connects to all of them and merges everything into one grid. Daemons gossip peer lists to each other, so adding one daemon URL in the UI is enough to discover the rest.
+Each machine runs its own `hush` daemon. The browser connects to all of them and merges everything into one grid. Daemons gossip peer lists, so adding one daemon URL is enough to discover the rest.
 
-### On each machine
+### Setup
 
-**1. Install Tailscale**
+**1. Install Tailscale on each machine** (for encrypted networking)
 
 ```sh
 # macOS
 brew install tailscale && sudo tailscaled & && tailscale up
 ```
 
-Note your Tailscale IP (`tailscale ip -4`) or MagicDNS hostname.
-
-**2. Trust the local CA on each machine**
+**2. Build and install Hush on each machine** (or use P2P upgrades after the first)
 
 ```sh
-hush trust
+make install
 ```
 
-**3. Start the daemon**
+**3. Start the first machine**
 
 ```sh
 hush \
   --advertise-url wss://$(tailscale ip -4):9111/ws \
-  --machine-name my-laptop \
+  --machine-name laptop \
   --auto-upgrade
 ```
 
-`--auto-upgrade` enables P2P binary distribution: when this daemon is newer than a peer, it automatically pushes its binary to that peer over the existing gossip connection. The peer restarts with the new version — no `gh` CLI or internet access required on the receiving machine.
-
-**4. Join an existing mesh (second machine onward)**
+**4. Join from additional machines**
 
 ```sh
 hush \
@@ -116,11 +89,11 @@ hush \
   --auto-upgrade
 ```
 
-Within ~30 seconds every daemon knows about every other daemon.
+The joining machine automatically receives the mesh CA via gossip and installs it (macOS will prompt for your password once). Within 30 seconds, every daemon knows about every other daemon.
 
-### In the browser
+**5. Open the browser**
 
-Click **+ daemon** in the command bar and enter any one daemon's WebSocket URL. The rest of the mesh auto-populates from gossiped peer lists within ~60 seconds.
+Navigate to any daemon's URL (e.g. `https://100.x.x.x:9111`). Click **+ daemon** in the command bar to add a second daemon's URL — or just wait for gossip to auto-populate the rest.
 
 ---
 
@@ -148,7 +121,7 @@ Options:
 
 ---
 
-## Running two daemons on one machine (testing)
+## Testing two daemons on one machine
 
 ```sh
 # Terminal 1
@@ -162,7 +135,7 @@ hush --port 9112 --machine-name studio \
   --join wss://localhost:9111/ws
 ```
 
-Add `wss://localhost:9111/ws` in the UI — `studio` appears automatically.
+Add `wss://localhost:9111/ws` in the browser UI — `studio` appears automatically.
 
 ---
 
@@ -203,9 +176,7 @@ Create `~/Library/LaunchAgents/com.hush.daemon.plist`:
 launchctl load ~/Library/LaunchAgents/com.hush.daemon.plist
 ```
 
-`KeepAlive: true` is required for P2P upgrades — after replacing its binary, `hush` calls `process::exit(0)` and launchd restarts it automatically with the new version.
-
-> **Note:** The `ProgramArguments` path must be absolute. `~` is not expanded by launchd. Replace `YOUR_USERNAME` with the output of `whoami`.
+`KeepAlive: true` is required for P2P upgrades — after replacing its binary, `hush` exits and launchd restarts it with the new version.
 
 ---
 
@@ -213,25 +184,12 @@ launchctl load ~/Library/LaunchAgents/com.hush.daemon.plist
 
 Upgrades flow through the gossip mesh — no GitHub access required on any machine except the one that builds the new binary.
 
-**To upgrade the whole mesh:**
-
 1. Build the new binary on one machine:
    ```sh
-   cd hush/daemon && cargo build --release
-   cp target/release/hush target/release/hush-hook ~/.local/bin/
+   cd hush && make install
    ```
 
-2. Restart that daemon with `--auto-upgrade`:
-   ```sh
-   pkill hush
-   hush --advertise-url wss://$(tailscale ip -4):9111/ws --auto-upgrade
-   ```
-
-3. Within one gossip round (~30 seconds), the daemon detects peers running an older version and streams the new binary to each of them over the existing TLS WebSocket. Each peer replaces its binary and restarts automatically.
-
-**Binary install location and self-upgrade:**
-- If `hush` is installed in a user-writable directory (e.g. `~/.local/bin/`), upgrades replace the binary in-place and rely on launchd `KeepAlive` to restart.
-- If the binary directory is not writable (e.g. `/usr/local/bin/`), the upgrade falls back to installing in `~/.hush/bin/` and execs directly from there. The process continues running with the new version; launchd will restart from the old path on the next system boot. For reliable upgrades, install to `~/.local/bin/`.
+2. Restart that daemon with `--auto-upgrade`. Within one gossip round (~30 seconds), it streams the new binary to each older peer over the existing TLS WebSocket. Each peer replaces its binary and restarts automatically.
 
 ---
 
@@ -244,8 +202,37 @@ Browser (any device)
 ```
 
 - Each `hush` daemon owns its pty sessions, project registry, and state file.
-- The browser namespaces IDs as `machineId:worktreeId` so dots from different machines never collide.
+- The browser namespaces IDs as `machineId:worktreeId` so projects from different machines never collide.
 - Daemons gossip peer lists every 30 seconds — adding one daemon seeds the whole mesh.
 - `hush-hook` is a shim invoked by Claude Code's hook system on lifecycle events (`SessionStart`, `Stop`, `Notification`, etc.). It writes structured JSON to a Unix socket so the daemon tracks status without parsing terminal output.
 - Pty sessions survive browser disconnects. Reconnect anytime; scrollback replays automatically.
-- P2P upgrades stream the binary over the same TLS WebSocket used for pty data, requiring no external services.
+- P2P upgrades stream the binary over the same TLS WebSocket used for pty data.
+- TLS certificates are automatically distributed via gossip — no manual `scp` or certificate management needed.
+
+---
+
+## Development
+
+```sh
+# Start the daemon (debug build)
+cd daemon && cargo run
+
+# Start the UI dev server (hot reload)
+cd ui && npm run dev
+```
+
+The UI dev server runs on `http://localhost:5173` and connects to the daemon's WebSocket at `wss://localhost:9111/ws`.
+
+**Optional: AI-powered command bar.** The command bar uses regex parsing by default. To enable natural language intent classification (downloads a ~300MB model on first load):
+
+```sh
+VITE_ENABLE_AI_INTENT=true npm run dev
+```
+
+Run `make hooks` once after cloning to install the pre-commit build check.
+
+---
+
+## License
+
+MIT

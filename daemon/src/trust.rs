@@ -21,15 +21,32 @@ pub fn install(hush_dir: &Path) -> io::Result<()> {
     let _ = std::fs::remove_file(&cert_path);
     let _ = std::fs::remove_file(&key_path);
 
-    do_install(&ca.cert_pem_path)?;
+    install_ca(&ca.cert_pem_path)?;
+    write_trusted_marker(hush_dir);
 
     if let Ok(fp) = fingerprint_pem(&std::fs::read(&ca.cert_pem_path)?) {
         println!("CA fingerprint (SHA-256): {fp}");
     }
-    println!(
-        "Restart hush (`hush`) to generate a CA-signed leaf cert."
-    );
+    println!("Restart hush (`hush`) to generate a CA-signed leaf cert.");
     Ok(())
+}
+
+/// Check whether the CA has been installed into the OS trust store previously
+/// (indicated by a `.trusted` marker file alongside the CA).
+pub fn is_trusted(hush_dir: &Path) -> bool {
+    hush_dir.join("tls").join(".trusted").exists()
+}
+
+/// Write the `.trusted` marker after a successful CA install.
+pub fn write_trusted_marker(hush_dir: &Path) {
+    let marker = hush_dir.join("tls").join(".trusted");
+    let _ = std::fs::write(&marker, "");
+}
+
+/// Install a CA cert into the OS trust store. Public so the daemon startup
+/// path can call it directly for auto-trust on first boot.
+pub fn install_ca(ca_cert_path: &Path) -> io::Result<()> {
+    do_install(ca_cert_path)
 }
 
 #[cfg(target_os = "macos")]
@@ -107,7 +124,10 @@ pub fn uninstall(hush_dir: &Path) -> io::Result<()> {
 fn do_uninstall(hush_dir: &Path) -> io::Result<()> {
     let ca_cert_path = hush_dir.join("tls").join("ca.crt");
     if !ca_cert_path.exists() {
-        println!("No CA cert found at {} — nothing to remove.", ca_cert_path.display());
+        println!(
+            "No CA cert found at {} — nothing to remove.",
+            ca_cert_path.display()
+        );
         return Ok(());
     }
 

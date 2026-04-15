@@ -41,7 +41,11 @@ pub fn load_or_generate_ca(hush_dir: &Path) -> io::Result<CaBundle> {
             .self_signed(&key_pair)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        return Ok(CaBundle { cert, key_pair, cert_pem_path: ca_cert_path });
+        return Ok(CaBundle {
+            cert,
+            key_pair,
+            cert_pem_path: ca_cert_path,
+        });
     }
 
     generate_ca(tls_dir, ca_cert_path, ca_key_path)
@@ -60,8 +64,8 @@ fn generate_ca(
         .push(DnType::CommonName, "Hush Local CA");
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
 
-    let key_pair = KeyPair::generate()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let key_pair =
+        KeyPair::generate().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     let cert = params
         .self_signed(&key_pair)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
@@ -76,12 +80,13 @@ fn generate_ca(
         std::fs::set_permissions(&ca_cert_path, std::fs::Permissions::from_mode(0o644))?;
     }
 
-    tracing::info!(
-        "Generated new local CA → {} (run `hush trust` to install in browser)",
-        ca_cert_path.display()
-    );
+    tracing::info!("Generated new local CA → {}", ca_cert_path.display());
 
-    Ok(CaBundle { cert, key_pair, cert_pem_path: ca_cert_path })
+    Ok(CaBundle {
+        cert,
+        key_pair,
+        cert_pem_path: ca_cert_path,
+    })
 }
 
 /// Load or generate the daemon's leaf TLS cert, signed by the local CA.
@@ -123,10 +128,7 @@ fn build_sans(machine_name: &str) -> Vec<String> {
         "::1".to_string(),
     ];
 
-    if !machine_name.is_empty()
-        && machine_name != "localhost"
-        && machine_name != "unknown"
-    {
+    if !machine_name.is_empty() && machine_name != "localhost" && machine_name != "unknown" {
         sans.push(machine_name.to_string());
     }
 
@@ -189,8 +191,8 @@ fn generate_and_save(
         sans.join(", ")
     );
 
-    let leaf_key = KeyPair::generate()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let leaf_key =
+        KeyPair::generate().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     let leaf_params = CertificateParams::new(sans)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     let leaf_cert = leaf_params
@@ -211,7 +213,11 @@ fn generate_and_save(
     }
 
     let fingerprint = fingerprint_pem(&cert_pem)?;
-    Ok(TlsMaterial { cert_pem, key_pem, fingerprint })
+    Ok(TlsMaterial {
+        cert_pem,
+        key_pem,
+        fingerprint,
+    })
 }
 
 fn try_load(cert_path: &Path, key_path: &Path) -> io::Result<TlsMaterial> {
@@ -229,7 +235,58 @@ fn try_load(cert_path: &Path, key_path: &Path) -> io::Result<TlsMaterial> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no private key found"))?;
 
     let fingerprint = fingerprint_pem(&cert_pem)?;
-    Ok(TlsMaterial { cert_pem, key_pem, fingerprint })
+    Ok(TlsMaterial {
+        cert_pem,
+        key_pem,
+        fingerprint,
+    })
+}
+
+/// Read CA cert + key PEM from the hush dir derived from the state file path.
+/// Returns `(Some(cert), Some(key))` if both files exist, `(None, None)` otherwise.
+pub fn read_ca_pems_from_state(state_path: &Path) -> (Option<String>, Option<String>) {
+    let hush_dir = state_path.parent().unwrap_or_else(|| Path::new("."));
+    let ca_crt = hush_dir.join("tls").join("ca.crt");
+    let ca_key = hush_dir.join("tls").join("ca.key");
+    match (
+        std::fs::read_to_string(&ca_crt),
+        std::fs::read_to_string(&ca_key),
+    ) {
+        (Ok(cert), Ok(key)) => (Some(cert), Some(key)),
+        _ => (None, None),
+    }
+}
+
+/// Replace the local CA with a mesh CA received from a peer. Deletes the
+/// existing leaf cert so it gets regenerated on next `load_or_generate`.
+pub fn replace_ca(hush_dir: &Path, cert_pem: &str, key_pem: &str) -> io::Result<()> {
+    let tls_dir = hush_dir.join("tls");
+    std::fs::create_dir_all(&tls_dir)?;
+
+    std::fs::write(tls_dir.join("ca.crt"), cert_pem)?;
+    std::fs::write(tls_dir.join("ca.key"), key_pem)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            tls_dir.join("ca.key"),
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        std::fs::set_permissions(
+            tls_dir.join("ca.crt"),
+            std::fs::Permissions::from_mode(0o644),
+        )?;
+    }
+
+    // Invalidate leaf cert so it gets re-signed by the new CA
+    let _ = std::fs::remove_file(tls_dir.join("cert.pem"));
+    let _ = std::fs::remove_file(tls_dir.join("key.pem"));
+    // Remove trusted marker — needs re-trust with new CA
+    let _ = std::fs::remove_file(tls_dir.join(".trusted"));
+
+    tracing::info!("Replaced local CA with mesh CA");
+    Ok(())
 }
 
 pub(crate) fn fingerprint_pem(cert_pem: &[u8]) -> io::Result<String> {

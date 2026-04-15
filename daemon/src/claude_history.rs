@@ -43,7 +43,9 @@ pub fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
 /// - The session's .jsonl file
 /// - Any *.json summary/sidecar files in the same directory
 pub fn session_files_to_transfer(session_id: &str) -> Vec<PathBuf> {
-    let Some(jsonl) = find_session_jsonl(session_id) else { return vec![] };
+    let Some(jsonl) = find_session_jsonl(session_id) else {
+        return vec![];
+    };
     let dir = match jsonl.parent() {
         Some(d) => d.to_path_buf(),
         None => return vec![jsonl],
@@ -77,8 +79,9 @@ pub fn install_history_files(files: &[PathBuf], dest_working_dir: &Path) -> Resu
     for src in files {
         if let Some(name) = src.file_name() {
             let dst = dest_dir.join(name);
-            std::fs::copy(src, &dst)
-                .map_err(|e| format!("Failed to copy {} → {}: {e}", src.display(), dst.display()))?;
+            std::fs::copy(src, &dst).map_err(|e| {
+                format!("Failed to copy {} → {}: {e}", src.display(), dst.display())
+            })?;
             count += 1;
         }
     }

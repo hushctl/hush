@@ -1,0 +1,11 @@
+# Default — maintainer reviews everything
+* @nicholasgasior
+
+# Rust daemon — core system, security-sensitive
+/daemon/ @nicholasgasior
+
+# Browser UI
+/ui/ @nicholasgasior
+
+# CI and repo config
+/.github/ @nicholasgasior

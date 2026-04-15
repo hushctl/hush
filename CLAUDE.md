@@ -1,6 +1,6 @@
 # Mission Control
 
-Browser-based multi-project command center for Claude Code. One spatial interface for all active sessions, accessible from any device.
+Browser-based command center for Claude Code across all your machines. One spatial interface for every session on every machine, accessible from any device.
 
 For product vision, research foundations, and UX roadmap, see [docs/VISION.md](docs/VISION.md).
 

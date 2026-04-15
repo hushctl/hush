@@ -72,10 +72,14 @@ pub fn spawn_gossip(
                 &tx,
                 auto_upgrade,
                 Arc::clone(&upgrading),
-            ).await;
+            )
+            .await;
         }
     });
-    info!("spawned gossip task (interval={}s, auto_upgrade={auto_upgrade})", GOSSIP_INTERVAL.as_secs());
+    info!(
+        "spawned gossip task (interval={}s, auto_upgrade={auto_upgrade})",
+        GOSSIP_INTERVAL.as_secs()
+    );
 }
 
 async fn run_gossip_round(
@@ -88,7 +92,11 @@ async fn run_gossip_round(
     // Snapshot peers + our own identity before releasing the lock.
     let (machine_id, advertise_url, peers) = {
         let s = state.read().await;
-        (s.machine_id.clone(), s.advertise_url.clone(), s.peers.clone())
+        (
+            s.machine_id.clone(),
+            s.advertise_url.clone(),
+            s.peers.clone(),
+        )
     };
 
     if peers.is_empty() {
@@ -97,11 +105,16 @@ async fn run_gossip_round(
 
     debug!("gossip round: dialling {} peer(s)", peers.len());
 
+    // Read our CA to include in hello messages
+    let my_ca = crate::tls::read_ca_pems_from_state(state_path);
+
     let mut newly_learned: Vec<PeerInfo> = Vec::new();
     // (machine_id, version) for each successfully contacted peer
     let mut contacted: Vec<(String, String)> = Vec::new();
     // Placeholder entries that turned out to point at ourselves — remove them.
     let mut self_placeholder_ids: Vec<String> = Vec::new();
+    // CA received from a peer (first one wins)
+    let mut received_ca: Option<(String, String, String)> = None; // (cert, key, from_machine)
 
     for peer in &peers {
         if peer.url.is_empty() {
@@ -112,17 +125,26 @@ async fn run_gossip_round(
             self_placeholder_ids.push(peer.machine_id.clone());
             continue;
         }
-        match dial_peer(&machine_id, &advertise_url, &peers, &peer.url).await {
-            Ok((responder_id, responder_version, received_peers)) => {
+        match dial_peer(&machine_id, &advertise_url, &peers, &peer.url, &my_ca).await {
+            Ok(result) => {
                 // If the peer responded with our own machine_id it's a self-dial
                 // (e.g. stale --join seed pointing at our own IP or localhost).
-                if responder_id == machine_id {
-                    debug!("gossip: {} ({}) resolved to ourselves — removing placeholder", peer.machine_id, peer.url);
+                if result.responder_id == machine_id {
+                    debug!(
+                        "gossip: {} ({}) resolved to ourselves — removing placeholder",
+                        peer.machine_id, peer.url
+                    );
                     self_placeholder_ids.push(peer.machine_id.clone());
                     continue;
                 }
-                contacted.push((responder_id.clone(), responder_version));
-                for rp in received_peers {
+                // Capture CA from peer if we don't have a trusted one yet
+                if received_ca.is_none() {
+                    if let (Some(cert), Some(key)) = (result.ca_cert_pem, result.ca_key_pem) {
+                        received_ca = Some((cert, key, result.responder_id.clone()));
+                    }
+                }
+                contacted.push((result.responder_id.clone(), result.responder_version));
+                for rp in result.peers {
                     // Don't add ourselves, and skip blank URLs
                     if rp.machine_id != machine_id && !rp.url.is_empty() {
                         newly_learned.push(rp);
@@ -130,7 +152,37 @@ async fn run_gossip_round(
                 }
             }
             Err(e) => {
-                debug!("gossip dial failed for {} ({}): {e}", peer.machine_id, peer.url);
+                debug!(
+                    "gossip dial failed for {} ({}): {e}",
+                    peer.machine_id, peer.url
+                );
+            }
+        }
+    }
+
+    // Adopt mesh CA if we received one and haven't trusted our own yet.
+    // This enables zero-config joining: `hush --join wss://peer:9111/ws` just works.
+    let hush_dir = state_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if let Some((cert, key, from_machine)) = received_ca {
+        if !crate::trust::is_trusted(hush_dir) {
+            info!("Adopting mesh CA from peer '{from_machine}'");
+            if let Err(e) = crate::tls::replace_ca(hush_dir, &cert, &key) {
+                info!("Failed to replace CA: {e}");
+            } else {
+                let ca_cert_path = hush_dir.join("tls").join("ca.crt");
+                match crate::trust::install_ca(&ca_cert_path) {
+                    Ok(()) => {
+                        crate::trust::write_trusted_marker(hush_dir);
+                        info!(
+                            "✓ Mesh CA trusted — browsers will accept certificates from this mesh"
+                        );
+                    }
+                    Err(e) => {
+                        info!("CA trust install failed: {e} — run `hush trust` manually");
+                    }
+                }
             }
         }
     }
@@ -156,7 +208,10 @@ async fn run_gossip_round(
     let current_version = env!("CARGO_PKG_VERSION");
     let contacted_ids: Vec<String> = contacted.iter().map(|(mid, _)| mid.clone()).collect();
     if !contacted_ids.is_empty() {
-        info!("gossip round complete: contacted [{}]", contacted_ids.join(", "));
+        info!(
+            "gossip round complete: contacted [{}]",
+            contacted_ids.join(", ")
+        );
     }
 
     // Log version mismatches and optionally push upgrades to older peers.
@@ -180,7 +235,9 @@ async fn run_gossip_round(
             // Look up the peer's URL and our own machine_id from state.
             let (our_machine_id, peer_url) = {
                 let s = state.read().await;
-                let url = s.peers.iter()
+                let url = s
+                    .peers
+                    .iter()
                     .find(|p| &p.machine_id == mid)
                     .map(|p| p.url.clone());
                 (s.machine_id.clone(), url)
@@ -197,9 +254,8 @@ async fn run_gossip_round(
             let tx2 = tx.clone();
             let sp = state_path.clone();
             tokio::spawn(async move {
-                peer_upgrade::send_upgrade(
-                    dest_url, mid_clone.clone(), our_machine_id, sp, tx2,
-                ).await;
+                peer_upgrade::send_upgrade(dest_url, mid_clone.clone(), our_machine_id, sp, tx2)
+                    .await;
                 // Remove from in-flight set whether it succeeded or failed.
                 upgrading2.lock().await.remove(&mid_clone);
             });
@@ -207,21 +263,37 @@ async fn run_gossip_round(
     }
 }
 
+/// Result of a successful peer dial — includes peer identity, their known
+/// peers, and optionally their CA material for mesh CA distribution.
+struct DialResult {
+    responder_id: String,
+    responder_version: String,
+    peers: Vec<PeerInfo>,
+    ca_cert_pem: Option<String>,
+    ca_key_pem: Option<String>,
+}
+
 /// Open a temporary WebSocket to `url`, send `peer_hello`, read the `peer_list`
-/// response, close, and return `(responder_machine_id, responder_version, received_peers)`.
+/// response, close, and return the result including optional CA material.
 async fn dial_peer(
     my_machine_id: &str,
     my_url: &str,
     my_peers: &[PeerInfo],
     peer_url: &str,
-) -> Result<(String, String, Vec<PeerInfo>), String> {
-    let hello = serde_json::json!({
+    my_ca: &(Option<String>, Option<String>),
+) -> Result<DialResult, String> {
+    let mut hello = serde_json::json!({
         "type": "peer_hello",
         "machine_id": my_machine_id,
         "url": my_url,
         "peers": my_peers,
         "version": env!("CARGO_PKG_VERSION"),
     });
+    // Include our CA so the responding peer can adopt it if needed
+    if let (Some(cert), Some(key)) = my_ca {
+        hello["ca_cert_pem"] = serde_json::Value::String(cert.clone());
+        hello["ca_key_pem"] = serde_json::Value::String(key.clone());
+    }
 
     let connector = make_tls_connector();
     let connect_fut = connect_async_tls_with_config(peer_url, None, false, Some(connector));
@@ -274,6 +346,16 @@ async fn dial_peer(
         .unwrap_or("")
         .to_string();
 
+    let ca_cert_pem = value
+        .get("ca_cert_pem")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let ca_key_pem = value
+        .get("ca_key_pem")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     let peers: Vec<PeerInfo> = value
         .get("peers")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -290,5 +372,11 @@ async fn dial_peer(
         })
         .collect();
 
-    Ok((responder_id, responder_version, peers))
+    Ok(DialResult {
+        responder_id,
+        responder_version,
+        peers,
+        ca_cert_pem,
+        ca_key_pem,
+    })
 }

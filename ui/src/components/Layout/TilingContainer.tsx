@@ -1,5 +1,5 @@
-import { TopBar } from './TopBar'
-import { Canvas } from '@/components/Canvas/Canvas'
+import { TopBar } from "./TopBar";
+import { Canvas } from "@/components/Canvas/Canvas";
 
 export function TilingContainer() {
   return (
@@ -9,5 +9,5 @@ export function TilingContainer() {
         <Canvas />
       </div>
     </div>
-  )
+  );
 }

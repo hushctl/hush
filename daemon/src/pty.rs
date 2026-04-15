@@ -100,8 +100,17 @@ impl PtyManager {
     }
 
     /// Returns whether a pty for the given worktree currently exists.
-    pub async fn exists(&self, worktree_id: &str) -> bool {
-        self.sessions.lock().await.contains_key(worktree_id)
+    pub async fn exists(&self, key: &str) -> bool {
+        self.sessions.lock().await.contains_key(key)
+    }
+
+    /// Check if any session exists with a key starting with the given prefix.
+    pub async fn any_with_prefix(&self, prefix: &str) -> bool {
+        self.sessions
+            .lock()
+            .await
+            .keys()
+            .any(|k| k.starts_with(prefix))
     }
 
     /// Get the current scrollback for a worktree, if a pty exists.
@@ -148,22 +157,28 @@ impl PtyManager {
     pub async fn spawn_shell(
         &self,
         worktree_id: String,
+        shell_id: String,
         working_dir: &Path,
         cols: u16,
         rows: u16,
     ) -> Result<(), String> {
-        let shell_key = format!("shell:{worktree_id}");
+        let shell_key = format!("shell:{worktree_id}:{shell_id}");
         {
             let sessions = self.sessions.lock().await;
             if sessions.contains_key(&shell_key) {
-                debug!("shell pty for {worktree_id} already exists, skipping spawn");
+                debug!("shell pty {shell_key} already exists, skipping spawn");
                 return Ok(());
             }
         }
 
         let pty_system = native_pty_system();
         let pair = pty_system
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| format!("openpty failed: {e}"))?;
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
@@ -187,8 +202,14 @@ impl PtyManager {
             .map_err(|e| format!("spawn shell failed: {e}"))?;
         drop(pair.slave);
 
-        let writer = pair.master.take_writer().map_err(|e| format!("take_writer failed: {e}"))?;
-        let reader = pair.master.try_clone_reader().map_err(|e| format!("clone_reader failed: {e}"))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("take_writer failed: {e}"))?;
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("clone_reader failed: {e}"))?;
 
         let session = Arc::new(Mutex::new(PtySession {
             writer,
@@ -208,9 +229,19 @@ impl PtyManager {
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => { debug!("shell pty reader EOF for {shell_key_thread}"); break; }
-                    Ok(n) => { if byte_tx.send(buf[..n].to_vec()).is_err() { break; } }
-                    Err(e) => { warn!("shell pty read error for {shell_key_thread}: {e}"); break; }
+                    Ok(0) => {
+                        debug!("shell pty reader EOF for {shell_key_thread}");
+                        break;
+                    }
+                    Ok(n) => {
+                        if byte_tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("shell pty read error for {shell_key_thread}: {e}");
+                        break;
+                    }
                 }
             }
         });
@@ -220,6 +251,7 @@ impl PtyManager {
         let sessions_for_cleanup = Arc::clone(&self.sessions);
         let mid = Arc::clone(&self.machine_id);
         let wt_id = worktree_id.clone();
+        let sid = shell_id.clone();
         let sk = shell_key.clone();
         tokio::spawn(async move {
             while let Some(chunk) = byte_rx.recv().await {
@@ -231,6 +263,7 @@ impl PtyManager {
                 let _ = tx.send(crate::protocol::ServerMessage::ShellData {
                     machine_id: (*mid).clone(),
                     worktree_id: wt_id.clone(),
+                    shell_id: sid.clone(),
                     data: encoded,
                 });
             }
@@ -239,11 +272,12 @@ impl PtyManager {
             let _ = tx.send(crate::protocol::ServerMessage::ShellExit {
                 machine_id: (*mid).clone(),
                 worktree_id: wt_id,
+                shell_id: sid,
                 code: None,
             });
         });
 
-        info!("spawned shell pty for worktree {worktree_id} ({cols}x{rows})");
+        info!("spawned shell pty {shell_key} ({cols}x{rows})");
         Ok(())
     }
 
@@ -298,8 +332,8 @@ impl PtyManager {
             // Only pass --continue if Claude actually has history for this cwd.
             // Without this check, a missing/wrong slug causes an immediate exit
             // ("No conversation found to continue") leaving the user with a dead pty.
-            let has_history = claude_history::history_dir_for(working_dir)
-                .map_or(false, |d| d.exists());
+            let has_history =
+                claude_history::history_dir_for(working_dir).map_or(false, |d| d.exists());
             if has_history {
                 cmd.arg("--continue");
             }
@@ -328,7 +362,10 @@ impl PtyManager {
         // Inject hook env vars — hush-hook reads these to know where to send
         // events and which worktree they belong to.
         cmd.env("HUSH_WORKTREE_ID", &worktree_id);
-        cmd.env("HUSH_HOOK_SOCKET", self.hook_socket.to_string_lossy().to_string());
+        cmd.env(
+            "HUSH_HOOK_SOCKET",
+            self.hook_socket.to_string_lossy().to_string(),
+        );
 
         let _child = pair
             .slave

@@ -5,7 +5,7 @@
 //! from the child streams to stdout unchanged so the user can interact with
 //! the program normally.
 //!
-//! Intended use: run `cargo run --bin pty-capture -- claude mcp add kinobi ...`
+//! Intended use: run `cargo run --bin pty-capture -- claude ...`
 //! from a native terminal (iTerm / Terminal.app), trigger the flow that
 //! misbehaves in Hush, and diff the captured input bytes against the bytes
 //! Hush sends for the same keystrokes. Any divergence is the bug.
@@ -27,8 +27,8 @@ fn main() {
         std::process::exit(2);
     }
 
-    let log_path = std::env::var("CAPTURE_LOG")
-        .unwrap_or_else(|_| "/tmp/pty_capture.log".to_string());
+    let log_path =
+        std::env::var("CAPTURE_LOG").unwrap_or_else(|_| "/tmp/pty_capture.log".to_string());
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -63,7 +63,12 @@ fn main() {
     let (rows, cols) = tty_size();
     let pty = NativePtySystem::default();
     let pair = pty
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .expect("openpty");
 
     let mut cmd = CommandBuilder::new(&args[0]);
