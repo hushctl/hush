@@ -31,7 +31,7 @@ function DisconnectedScreen() {
           to start the daemon
         </p>
         <pre className="text-xs font-mono text-foreground whitespace-pre-wrap">
-          cd mission-control/daemon{"\n"}cargo run
+          cd hush/daemon{"\n"}cargo run
         </pre>
       </div>
       <p className="text-xs text-muted-foreground">

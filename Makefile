@@ -1,4 +1,4 @@
-.PHONY: hooks check check-daemon check-ui build build-ui build-daemon install demo
+.PHONY: hooks check check-daemon check-ui build build-ui build-daemon install
 
 hooks:
 	./scripts/install-hooks.sh
@@ -31,8 +31,3 @@ install: build
 	@echo "Installed to ~/.local/bin/hush and ~/.hush/ui/"
 	@echo "Make sure ~/.local/bin is on your PATH, then run: hush"
 
-# ── Demo GIF ──────────────────────────────────────────────────────────────────
-
-demo: build-daemon
-	cd ui && npx playwright install chromium --with-deps 2>/dev/null || true
-	node scripts/record-demo.mjs

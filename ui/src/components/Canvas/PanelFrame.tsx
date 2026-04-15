@@ -1,7 +1,7 @@
 import { useRef, useCallback, useState } from "react";
-import { useStore } from "@/store";
+import { useStore, splitKey } from "@/store";
 import { statusColor } from "@/lib/status";
-import { X } from "lucide-react";
+import { X, RotateCw } from "lucide-react";
 import { ShellFooter } from "@/components/Terminal/ShellFooter";
 import { TerminalPane } from "@/components/Terminal/TerminalPane";
 import { ShellPane } from "@/components/Terminal/ShellPane";
@@ -21,6 +21,10 @@ export function PanelFrame({ panel }: Props) {
   const focusPanel = useStore((s) => s.focusPanel);
   const closePanel = useStore((s) => s.closePanel);
   const openPanel = useStore((s) => s.openPanel);
+  const send = useStore((s) => s.send);
+
+  // Restart epoch — incrementing forces TerminalPane to remount (fresh pty_attach)
+  const [restartEpoch, setRestartEpoch] = useState(0);
 
   // Derive title and status dot
   const wt = panel.kind !== "worktree_list" ? worktrees[panel.targetId] : null;
@@ -255,6 +259,17 @@ export function PanelFrame({ panel }: Props) {
               >
                 ◫
               </button>
+              <button
+                className="w-4 h-4 flex items-center justify-center text-muted-foreground hover:text-foreground"
+                title="Restart Claude Code session"
+                onClick={() => {
+                  const [mid, rawId] = splitKey(panel.targetId);
+                  send(mid, { type: "pty_kill", worktree_id: rawId });
+                  setRestartEpoch((e) => e + 1);
+                }}
+              >
+                <RotateCw className="w-2.5 h-2.5" />
+              </button>
             </>
           )}
           <button
@@ -269,7 +284,7 @@ export function PanelFrame({ panel }: Props) {
       {/* Body — position:relative so absolute-inset terminal fills it correctly */}
       <div className="flex-1 overflow-hidden min-h-0 relative">
         {panel.kind === "terminal" && (
-          <TerminalPane worktreeId={panel.targetId} />
+          <TerminalPane key={restartEpoch} worktreeId={panel.targetId} />
         )}
         {panel.kind === "shell" && (
           <ShellPane worktreeId={panel.targetId} shellId={panel.shellId} />

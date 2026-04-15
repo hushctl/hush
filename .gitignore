@@ -38,3 +38,6 @@ Thumbs.db
 
 # ── Claude Code local settings (per-worktree, daemon-managed) ───────────────
 .claude/settings.local.json
+
+# ── Demo generation (local-only) ────────────────────────────────────────────
+scripts/record-demo.mjs

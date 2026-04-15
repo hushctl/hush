@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions follow 
 
 ---
 
+## [0.12.0] — 2025-04-15
+
+### Added
+- Restart Claude Code session button in terminal panel header
+- Improved demo GIF with visible cursor, Claude Code output, shell footers, and multi-shell stacking
+
+### Fixed
+- CODE_OF_CONDUCT.md placeholder contact method filled in
+- HTML title changed from "ui" to "Hush"
+- Disconnected screen path corrected to `cd hush/daemon`
+
 ## [0.10.0] — 2025-04-08
 
 ### Added
