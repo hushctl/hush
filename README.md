@@ -12,6 +12,8 @@ Run Claude Code on your laptop, your desktop, your cloud box — and control all
 - **Sessions survive disconnects** — Close your laptop, Claude keeps working. Reconnect later, scrollback replays automatically.
 - **P2P upgrades** — Build once, propagate to the whole mesh. No CI, no GitHub access needed on receiving machines.
 
+> **Private network only.** Hush is designed for use over Tailscale, a VPN, or a trusted LAN. Do not expose the daemon port to the public internet — there is no authentication on the daemon-to-daemon gossip channel.
+
 ---
 
 ## Quick start
@@ -25,7 +27,7 @@ Run Claude Code on your laptop, your desktop, your cloud box — and control all
 ### Build and install
 
 ```sh
-git clone https://github.com/nicholasgasior/hush
+git clone https://github.com/kushalhalder/hush
 cd hush
 make install
 ```
@@ -90,19 +92,19 @@ hush invite
 # Token expires in 10 minutes.
 ```
 
-On each additional machine, join with the token:
+On each additional machine, join with the token. `hush invite` prints the exact `--join` URL to use — copy it and fill in your own flags:
 
 ```sh
 hush \
   --bind 0.0.0.0 \
   --advertise-url wss://$(tailscale ip -4):9111/ws \
   --machine-name studio \
-  --join wss://100.x.x.x:9111/ws \
+  --join wss://100.x.x.x:9111/peer \
   --join-token hush-join-XXXX-XXXX \
   --auto-upgrade
 ```
 
-The joining machine receives a signed leaf cert from the CA machine, installs the mesh CA into its OS trust store (macOS will prompt for your password once), and starts. Within 30 seconds, every daemon knows about every other daemon.
+The joining machine POSTs to the CA machine's `/join` endpoint, receives a signed leaf cert, installs the mesh CA into its OS trust store (macOS will prompt for your password once), and starts. Within 30 seconds, every daemon knows about every other daemon.
 
 > `--bind 0.0.0.0` is required for multi-machine use so that remote browsers and peer daemons can reach this daemon over Tailscale. The default (`127.0.0.1`) is intentionally localhost-only for single-machine setups.
 
@@ -131,6 +133,8 @@ Options:
       --advertise-url <URL>      WebSocket URL peers should dial to reach this daemon
                                  Required for peer discovery (e.g. wss://host:9111/ws)
       --join <URL>               Seed peer URL on startup (repeatable)
+                                 Use the /peer endpoint (e.g. wss://host:9111/peer)
+                                 `hush invite` prints the exact command to run
       --join-token <TOKEN>       Join token from `hush invite` on an existing mesh member
                                  Used with --join to receive a signed cert from the CA machine
       --auto-upgrade             Automatically push this binary to older peers
@@ -156,7 +160,7 @@ hush --port 9112 --machine-name studio \
   --state-file ~/.hush/state-studio.json \
   --tls-dir ~/.hush/ \
   --advertise-url wss://localhost:9112/ws \
-  --join wss://localhost:9111/ws \
+  --join wss://localhost:9111/peer \
   --join-token hush-join-XXXX-XXXX
 ```
 
