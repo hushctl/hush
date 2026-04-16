@@ -135,6 +135,8 @@ jobs:
 
       - name: Run acceptance tests
         working-directory: tests
+        env:
+          HUSH_SKIP_CA_TRUST: "1"
         run: node run_tests.mjs
 
   security:
