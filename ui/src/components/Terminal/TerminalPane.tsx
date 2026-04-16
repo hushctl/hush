@@ -37,8 +37,8 @@ export function TerminalPane({ worktreeId }: Props) {
       fontSize: 13,
       cursorBlink: true,
       theme: {
-        background: "#0a0a0a",
-        foreground: "#e5e5e5",
+        background: "#1a1a1e",
+        foreground: "#c8c8c8",
       },
       allowProposedApi: true,
     });
@@ -205,7 +205,7 @@ export function TerminalPane({ worktreeId }: Props) {
     <div
       ref={containerRef}
       data-testid={`terminal-pane-${worktreeId}`}
-      style={{ position: "absolute", inset: 0, background: "#0a0a0a" }}
+      style={{ position: "absolute", inset: 0, background: "#1a1a1e" }}
     />
   );
 }

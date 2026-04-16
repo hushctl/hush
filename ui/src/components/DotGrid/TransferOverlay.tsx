@@ -112,13 +112,13 @@ export function TransferOverlay({ positions, size }: Props) {
           return (
             <g key={t.transferId}>
               {/* Background connector */}
-              <path d={pathD} stroke="#27272a" strokeWidth={1.5} fill="none" />
+              <path d={pathD} stroke="#2e2e32" strokeWidth={1.5} fill="none" />
 
               {/* Progress fill */}
               {progress > 0 && (
                 <path
                   d={`M ${srcPos.x} ${srcPos.y} L ${srcPos.x + dx * progress} ${srcPos.y + dy * progress}`}
-                  stroke="#71717a"
+                  stroke="#636368"
                   strokeWidth={1.5}
                   fill="none"
                 />
@@ -127,7 +127,7 @@ export function TransferOverlay({ positions, size }: Props) {
               {/* Shimmer — short bright segment travelling along the path */}
               <path
                 d={pathD}
-                stroke="#e4e4e7"
+                stroke="#b8b8be"
                 strokeWidth={1.5}
                 fill="none"
                 opacity={0.5}
@@ -142,7 +142,7 @@ export function TransferOverlay({ positions, size }: Props) {
                 width={srcPos.dotSize + 6}
                 height={srcPos.dotSize + 6}
                 fill="none"
-                stroke="#71717a"
+                stroke="#636368"
                 strokeWidth={1}
                 strokeDasharray="3 2"
               />
@@ -154,7 +154,7 @@ export function TransferOverlay({ positions, size }: Props) {
                 width={12}
                 height={12}
                 fill="none"
-                stroke="#52525b"
+                stroke="#48484e"
                 strokeWidth={1}
                 strokeDasharray="2 2"
               />
@@ -164,7 +164,7 @@ export function TransferOverlay({ positions, size }: Props) {
                 y={srcPos.y + 4}
                 fontSize={9}
                 fontFamily="ui-monospace, monospace"
-                fill="#71717a"
+                fill="#636368"
                 style={{ pointerEvents: "none" }}
               >
                 ⇢

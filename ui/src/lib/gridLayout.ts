@@ -83,7 +83,7 @@ export function generateVoronoiCells(
     cy /= poly.length;
 
     // Gravity-well fill: blend toward the nearest worktree's status color
-    let fill = "#0a0a0a";
+    let fill = "#1a1a1e";
     let bestFactor = 0;
     let bestColor = fill;
     for (const wt of wtPositions) {
@@ -97,7 +97,7 @@ export function generateVoronoiCells(
       }
     }
     if (bestFactor > 0) {
-      fill = blendColor("#0a0a0a", bestColor, bestFactor);
+      fill = blendColor("#1a1a1e", bestColor, bestFactor);
     }
 
     cells.push({ polygon: poly as Array<[number, number]>, fill });

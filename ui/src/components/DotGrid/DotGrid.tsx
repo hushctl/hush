@@ -135,7 +135,7 @@ export function DotGrid() {
               key={i}
               points={cell.polygon.map(([x, y]) => `${x},${y}`).join(" ")}
               fill={cell.fill}
-              stroke="#27272a"
+              stroke="#2e2e32"
               strokeWidth={0.5}
               style={{ transition: "fill 0.4s ease" }}
             />
@@ -160,7 +160,7 @@ export function DotGrid() {
                     fontSize={9}
                     fontFamily="ui-monospace, monospace"
                     fontWeight={400}
-                    fill="#71717a"
+                    fill="#636368"
                     textAnchor="end"
                     letterSpacing="0.08em"
                     style={{ pointerEvents: "none" }}
@@ -174,7 +174,7 @@ export function DotGrid() {
                   fontSize={10}
                   fontFamily="ui-monospace, monospace"
                   fontWeight={400}
-                  fill="#52525b"
+                  fill="#48484e"
                   textAnchor="end"
                   style={{ pointerEvents: "none" }}
                 >
@@ -187,7 +187,7 @@ export function DotGrid() {
                     fontSize={9}
                     fontFamily="ui-monospace, monospace"
                     fontWeight={400}
-                    fill="#3f3f46"
+                    fill="#38383e"
                     textAnchor="end"
                     style={{ pointerEvents: "none" }}
                   >
@@ -275,7 +275,7 @@ export function DotGrid() {
                   top: pos.y - 5,
                   fontSize: 9,
                   fontFamily: "ui-monospace, monospace",
-                  color: "#a1a1aa",
+                  color: "#8e8e96",
                   pointerEvents: "none",
                   userSelect: "none",
                 }}

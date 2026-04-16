@@ -34,7 +34,7 @@ export function CanvasConnectors() {
 
     // Pick a representative color from the first worktree in the project
     const repWt = Object.values(worktrees).find((w) => w.project_id === pid);
-    const color = repWt ? statusColor(repWt.status) : "#71717a";
+    const color = repWt ? statusColor(repWt.status) : "#636368";
 
     // Connect each panel to the next in the group (chain, not full mesh)
     for (let i = 0; i < group.length - 1; i++) {

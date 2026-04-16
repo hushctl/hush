@@ -18,8 +18,8 @@ interface Props {
 const PULSE_COLOR: Record<string, string> = {
   warning: "#f59e0b",
   critical: "#ef4444",
-  normal: "#3f3f46",
-  disconnected: "#27272a",
+  normal: "#38383e",
+  disconnected: "#2e2e32",
 };
 
 export function MemoryPulse({ alert, samples, connected }: Props) {
