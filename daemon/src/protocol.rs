@@ -118,6 +118,10 @@ pub enum ClientMessage {
         /// The CA private key is never transmitted over the wire.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ca_cert_pem: Option<String>,
+        /// Auth token for the sender's /ws endpoint. Sent over the mTLS-authenticated
+        /// /peer channel only — never in browser-facing messages.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth_token: Option<String>,
     },
 
     // ── Transfer: browser → source daemon ────────────────────────────────────
@@ -277,6 +281,10 @@ pub enum ServerMessage {
         /// The CA private key is never transmitted over the wire.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ca_cert_pem: Option<String>,
+        /// Sender's auth token for their /ws endpoint. Included in daemon-to-daemon
+        /// peer_list replies so the receiving daemon can relay it to the browser.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth_token: Option<String>,
     },
 
     // ── Peer upgrade responses (destination → source) ─────────────────────────

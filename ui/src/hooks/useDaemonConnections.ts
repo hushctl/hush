@@ -85,37 +85,56 @@ export function useDaemonConnections() {
       async function connect(url: string, daemonId: string) {
         if (entry.unmounted) return;
 
-        // Fetch auth token — try /config/local first (works for loopback
-        // connections and returns the token), fall back to /config for remote.
+        // Fetch auth token for this daemon's /ws endpoint.
+        // Strategy:
+        //   1. Try /config/local on this URL (works for localhost, 403 for remote)
+        //   2. For remote daemons: ask the local daemon's /config/peers — it stores
+        //      peer tokens received over the mTLS-authenticated gossip channel.
         let wsUrl = url;
         try {
           const baseHttpUrl = url
             .replace(/\/ws$/, "")
             .replace(/^wss:/, "https:")
             .replace(/^ws:/, "http:");
-          // Try /config/local first; daemon returns token only for loopback callers
-          let config: Record<string, unknown> | null = null;
+
+          let token: string | null = null;
+
+          // Try /config/local (loopback-only endpoint, returns token + machine_id)
+          let machineId: string | null = null;
           const localRes = await fetch(`${baseHttpUrl}/config/local`).catch(() => null);
           if (localRes?.ok) {
-            config = await localRes.json();
+            const cfg = await localRes.json();
+            token = cfg.token ?? null;
+            machineId = cfg.machine_id ?? null;
           } else {
-            const res = await fetch(`${baseHttpUrl}/config`).catch(() => null);
-            if (res?.ok) config = await res.json();
-          }
-          if (config) {
-            // Deduplicate: if another daemon with this machine_id is already
-            // registered at a different URL, drop this stale entry.
-            if (config.machine_id && config.machine_id !== daemonId) {
-              const existing = useStore.getState().daemons[config.machine_id as string];
-              if (existing && existing.url !== url) {
-                useStore.getState().removeDaemon(daemonId);
-                return;
+            // Remote daemon — get machine_id from /config, token from local /config/peers
+            const cfgRes = await fetch(`${baseHttpUrl}/config`).catch(() => null);
+            if (cfgRes?.ok) {
+              const cfg = await cfgRes.json();
+              machineId = cfg.machine_id ?? null;
+            }
+            if (machineId) {
+              const peersRes = await fetch("https://localhost:9111/config/peers").catch(() => null);
+              if (peersRes?.ok) {
+                const peers = await peersRes.json() as Record<string, string>;
+                token = peers[machineId] ?? null;
               }
             }
-            if (config.token) {
-              const sep = url.includes("?") ? "&" : "?";
-              wsUrl = `${url}${sep}token=${config.token}`;
+          }
+
+          // Deduplicate: if another daemon with this machine_id is already
+          // registered at a different URL, drop this stale entry.
+          if (machineId && machineId !== daemonId) {
+            const existing = useStore.getState().daemons[machineId];
+            if (existing && existing.url !== url) {
+              useStore.getState().removeDaemon(daemonId);
+              return;
             }
+          }
+
+          if (token) {
+            const sep = url.includes("?") ? "&" : "?";
+            wsUrl = `${url}${sep}token=${token}`;
           }
         } catch {
           // Fall through — connect without token

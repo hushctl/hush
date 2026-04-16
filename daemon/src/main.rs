@@ -397,6 +397,7 @@ async fn main() {
         .route("/health", get(|| async { "ok" }))
         .route("/config", get(config_handler))
         .route("/config/local", get(config_local_handler))
+        .route("/config/peers", get(config_peers_handler))
         .with_state(app_state)
         .merge(join_router)
         .layer(cors);
@@ -587,6 +588,19 @@ async fn config_local_handler(
         "machine_id": machine_id,
     }))
     .into_response()
+}
+
+/// Returns auth tokens for all known peers — loopback only. The browser uses
+/// these to open authenticated WebSocket connections to remote daemons.
+async fn config_peers_handler(
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    AxumState(app_state): AxumState<AppState>,
+) -> axum::response::Response {
+    if !addr.ip().is_loopback() {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    let tokens = app_state.daemon_state.read().await.peer_tokens_snapshot();
+    axum::Json(tokens).into_response()
 }
 
 async fn ws_handler(

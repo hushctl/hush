@@ -846,6 +846,7 @@ async fn handle_client_message(
                 peers,
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 ca_cert_pem: None,
+                auth_token: None,
             });
         }
 
@@ -1298,6 +1299,7 @@ async fn handle_client_message(
             peers: sender_peers,
             version: sender_version,
             ca_cert_pem: _sender_ca_cert,
+            auth_token: sender_auth_token,
         } => {
             // Merge sender + their known peers into our state
             {
@@ -1313,19 +1315,29 @@ async fn handle_client_message(
                     version: sender_version,
                 });
                 s.merge_peers(sender_peers);
+                // Store auth token so browsers can fetch remote tokens via /config/peers
+                if let Some(token) = sender_auth_token {
+                    s.store_peer_token(&sender_id, token);
+                }
                 s.save(&state_path);
             }
             // Reply with our peer list + CA cert (public only, never the private key)
+            // + our own auth token so the peer can relay it to their browser.
             let (machine_id, peers) = {
                 let s = state.read().await;
                 (s.machine_id.clone(), s.known_peers())
             };
             let (ca_cert_pem, _) = crate::tls::read_ca_pems_from_state(&state_path);
+            let hush_dir = state_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let my_auth_token = std::fs::read_to_string(hush_dir.join("auth_token"))
+                .ok()
+                .map(|s| s.trim().to_string());
             let _ = tx.send(ServerMessage::PeerList {
                 machine_id,
                 peers,
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 ca_cert_pem,
+                auth_token: my_auth_token,
             });
         }
     }

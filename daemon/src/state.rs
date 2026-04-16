@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,6 +32,10 @@ pub struct DaemonState {
     /// Known peers in the gossip mesh.
     #[serde(default)]
     pub peers: Vec<PeerInfo>,
+    /// Auth tokens for known peers, keyed by machine_id. Received over the
+    /// mTLS-authenticated /peer channel. Not persisted to disk.
+    #[serde(skip)]
+    pub peer_tokens: HashMap<String, String>,
     pub projects: Vec<Project>,
     pub next_project_id: u32,
     pub next_worktree_id: u32,
@@ -86,6 +91,7 @@ impl Default for DaemonState {
             machine_id: String::new(),
             advertise_url: String::new(),
             peers: Vec::new(),
+            peer_tokens: HashMap::new(),
             projects: Vec::new(),
             next_project_id: 1,
             next_worktree_id: 1,
@@ -116,6 +122,16 @@ impl DaemonState {
         } else {
             self.peers.push(peer);
         }
+    }
+
+    /// Store a peer's auth token (received over mTLS-authenticated channel).
+    pub fn store_peer_token(&mut self, machine_id: &str, token: String) {
+        self.peer_tokens.insert(machine_id.to_string(), token);
+    }
+
+    /// All known peer tokens, for relaying to the browser via /config/peers.
+    pub fn peer_tokens_snapshot(&self) -> HashMap<String, String> {
+        self.peer_tokens.clone()
     }
 
     /// Merge a slice of peers (e.g. received in a peer_list message).

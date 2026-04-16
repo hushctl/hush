@@ -109,6 +109,9 @@ async fn run_gossip_round(
     let hush_dir = state_path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let leaf_cert = std::fs::read(hush_dir.join("tls").join("cert.pem")).ok();
     let leaf_key = std::fs::read(hush_dir.join("tls").join("key.pem")).ok();
+    let my_auth_token = std::fs::read_to_string(hush_dir.join("auth_token"))
+        .ok()
+        .map(|s| s.trim().to_string());
 
     let mut newly_learned: Vec<PeerInfo> = Vec::new();
     // (machine_id, version) for each successfully contacted peer
@@ -117,6 +120,7 @@ async fn run_gossip_round(
     let mut self_placeholder_ids: Vec<String> = Vec::new();
     // CA cert received from a peer (public only — key is never transmitted)
     let mut received_ca_cert: Option<(String, String)> = None; // (cert_pem, from_machine)
+    let mut peer_tokens_received: Vec<(String, String)> = Vec::new(); // (machine_id, token)
 
     for peer in &peers {
         if peer.url.is_empty() {
@@ -135,6 +139,7 @@ async fn run_gossip_round(
             &my_ca,
             leaf_cert.as_deref(),
             leaf_key.as_deref(),
+            my_auth_token.as_deref(),
         )
         .await
         {
@@ -156,6 +161,9 @@ async fn run_gossip_round(
                     }
                 }
                 contacted.push((result.responder_id.clone(), result.responder_version));
+                if let Some(token) = result.auth_token {
+                    peer_tokens_received.push((result.responder_id.clone(), token));
+                }
                 for rp in result.peers {
                     // Don't add ourselves, and skip blank URLs
                     if rp.machine_id != machine_id && !rp.url.is_empty() {
@@ -213,6 +221,9 @@ async fn run_gossip_round(
             }
         }
         s.merge_peers(newly_learned);
+        for (mid, token) in &peer_tokens_received {
+            s.store_peer_token(mid, token.clone());
+        }
         // Remove any entries we discovered were pointing at ourselves
         for mid in &self_placeholder_ids {
             s.peers.retain(|p| &p.machine_id != mid);
@@ -286,6 +297,8 @@ struct DialResult {
     responder_version: String,
     peers: Vec<PeerInfo>,
     ca_cert_pem: Option<String>,
+    /// Auth token for the responder's /ws endpoint, if they sent it.
+    auth_token: Option<String>,
 }
 
 /// Open a temporary WebSocket to `url`, send `peer_hello`, read the `peer_list`
@@ -298,6 +311,7 @@ async fn dial_peer(
     my_ca: &(Option<String>, Option<String>),
     leaf_cert_pem: Option<&[u8]>,
     leaf_key_pem: Option<&[u8]>,
+    my_auth_token: Option<&str>,
 ) -> Result<DialResult, String> {
     let mut hello = serde_json::json!({
         "type": "peer_hello",
@@ -310,6 +324,11 @@ async fn dial_peer(
     // can store it for TLS verification purposes.
     if let (Some(cert), _) = my_ca {
         hello["ca_cert_pem"] = serde_json::Value::String(cert.clone());
+    }
+    // Include our auth token so the peer can relay it to browsers connecting
+    // remotely. Sent over the mTLS-authenticated /peer channel only.
+    if let Some(token) = my_auth_token {
+        hello["auth_token"] = serde_json::Value::String(token.to_string());
     }
 
     let connector = match (leaf_cert_pem, leaf_key_pem) {
@@ -373,6 +392,11 @@ async fn dial_peer(
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let auth_token = value
+        .get("auth_token")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     let peers: Vec<PeerInfo> = value
         .get("peers")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -394,5 +418,6 @@ async fn dial_peer(
         responder_version,
         peers,
         ca_cert_pem,
+        auth_token,
     })
 }
