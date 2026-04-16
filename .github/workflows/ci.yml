@@ -98,6 +98,45 @@ jobs:
         working-directory: ui
         run: npx tsc --noEmit
 
+  acceptance:
+    name: Acceptance tests (WS protocol)
+    runs-on: macos-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: macos-latest-cargo-${{ hashFiles('daemon/Cargo.lock') }}
+          restore-keys: macos-latest-cargo-
+
+      - name: Build daemon (debug)
+        working-directory: daemon
+        run: cargo build
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install test dependencies
+        working-directory: tests
+        run: npm ci
+
+      - name: Run acceptance tests
+        working-directory: tests
+        run: node run_tests.mjs
+
   security:
     name: Security audit
     runs-on: ubuntu-latest
