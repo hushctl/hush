@@ -1,7 +1,7 @@
 use std::io::Write as _;
 use std::path::Path;
 
-const REPO: &str = "kushalhalder/hush";
+const REPO: &str = "hushctl/hush";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Extract a hush release tar.gz and atomically replace the `hush` and

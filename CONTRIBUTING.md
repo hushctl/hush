@@ -9,7 +9,7 @@ Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 ## Quick setup
 
 ```sh
-git clone https://github.com/kushalhalder/hush
+git clone https://github.com/hushctl/hush
 cd hush
 
 # Build everything

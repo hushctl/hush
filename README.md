@@ -27,7 +27,7 @@ Run Claude Code on your laptop, your desktop, your cloud box — and control all
 ### Build and install
 
 ```sh
-git clone https://github.com/kushalhalder/hush
+git clone https://github.com/hushctl/hush
 cd hush
 make install
 ```
