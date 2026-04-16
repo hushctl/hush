@@ -4,7 +4,7 @@
 //! invocation and writes one JSON line. We parse the line, look up the
 //! worktree, transition its status, persist, and broadcast.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -177,10 +177,4 @@ async fn handle_line(
             worktrees,
         });
     }
-}
-
-/// Standard socket location: ~/.hush/hooks.sock
-pub fn default_socket_path() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| Path::new("/tmp").to_path_buf());
-    home.join(".hush").join("hooks.sock")
 }

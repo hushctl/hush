@@ -74,22 +74,37 @@ make install
 
 ```sh
 hush \
+  --bind 0.0.0.0 \
   --advertise-url wss://$(tailscale ip -4):9111/ws \
   --machine-name laptop \
   --auto-upgrade
 ```
 
-**4. Join from additional machines**
+**4. Join additional machines**
+
+On the first machine, generate a short-lived join token:
+
+```sh
+hush invite
+# prints: hush-join-XXXX-XXXX
+# Token expires in 10 minutes.
+```
+
+On each additional machine, join with the token:
 
 ```sh
 hush \
+  --bind 0.0.0.0 \
   --advertise-url wss://$(tailscale ip -4):9111/ws \
   --machine-name studio \
   --join wss://100.x.x.x:9111/ws \
+  --join-token hush-join-XXXX-XXXX \
   --auto-upgrade
 ```
 
-The joining machine automatically receives the mesh CA via gossip and installs it (macOS will prompt for your password once). Within 30 seconds, every daemon knows about every other daemon.
+The joining machine receives a signed leaf cert from the CA machine, installs the mesh CA into its OS trust store (macOS will prompt for your password once), and starts. Within 30 seconds, every daemon knows about every other daemon.
+
+> `--bind 0.0.0.0` is required for multi-machine use so that remote browsers and peer daemons can reach this daemon over Tailscale. The default (`127.0.0.1`) is intentionally localhost-only for single-machine setups.
 
 **5. Open the browser**
 
@@ -103,17 +118,21 @@ Navigate to any daemon's URL (e.g. `https://100.x.x.x:9111`). Click **+ daemon**
 hush [OPTIONS] [COMMAND]
 
 Commands:
+  invite    Generate a join token for enrolling a new machine into the mesh
   upgrade   Pull a newer binary from a peer (manual trigger)
   trust     Manage the local CA used for TLS certificates
 
 Options:
   -p, --port <PORT>              Port to listen on [default: 9111]
-      --bind <ADDR>              Bind address [default: 0.0.0.0]
+      --bind <ADDR>              Bind address [default: 127.0.0.1]
+                                 Use 0.0.0.0 for multi-machine / Tailscale access
       --state-file <PATH>        State file [default: ~/.hush/state.json]
       --machine-name <NAME>      Label shown in the UI (default: hostname)
       --advertise-url <URL>      WebSocket URL peers should dial to reach this daemon
                                  Required for peer discovery (e.g. wss://host:9111/ws)
       --join <URL>               Seed peer URL on startup (repeatable)
+      --join-token <TOKEN>       Join token from `hush invite` on an existing mesh member
+                                 Used with --join to receive a signed cert from the CA machine
       --auto-upgrade             Automatically push this binary to older peers
       --tls-dir <PATH>           Directory for TLS CA and leaf cert (default: ~/.hush/)
   -h, --help                     Print help
@@ -128,12 +147,20 @@ Options:
 hush --port 9111 --machine-name laptop \
   --advertise-url wss://localhost:9111/ws
 
+# Generate a join token
+hush invite
+# → hush-join-XXXX-XXXX
+
 # Terminal 2
 hush --port 9112 --machine-name studio \
   --state-file ~/.hush/state-studio.json \
+  --tls-dir ~/.hush/ \
   --advertise-url wss://localhost:9112/ws \
-  --join wss://localhost:9111/ws
+  --join wss://localhost:9111/ws \
+  --join-token hush-join-XXXX-XXXX
 ```
+
+> `--tls-dir ~/.hush/` points both daemons at the same CA so they trust each other's leaf certs without a separate trust-install step.
 
 Add `wss://localhost:9111/ws` in the browser UI — `studio` appears automatically.
 
@@ -154,6 +181,8 @@ Create `~/Library/LaunchAgents/com.hush.daemon.plist`:
   <key>ProgramArguments</key>
   <array>
     <string>/Users/YOUR_USERNAME/.local/bin/hush</string>
+    <string>--bind</string>
+    <string>0.0.0.0</string>
     <string>--advertise-url</string>
     <string>wss://YOUR_TAILSCALE_IP:9111/ws</string>
     <string>--machine-name</string>
@@ -206,8 +235,8 @@ Browser (any device)
 - Daemons gossip peer lists every 30 seconds — adding one daemon seeds the whole mesh.
 - `hush-hook` is a shim invoked by Claude Code's hook system on lifecycle events (`SessionStart`, `Stop`, `Notification`, etc.). It writes structured JSON to a Unix socket so the daemon tracks status without parsing terminal output.
 - Pty sessions survive browser disconnects. Reconnect anytime; scrollback replays automatically.
-- P2P upgrades stream the binary over the same TLS WebSocket used for pty data.
-- TLS certificates are automatically distributed via gossip — no manual `scp` or certificate management needed.
+- P2P upgrades stream the binary over the same TLS WebSocket used for pty data. Upgrade tarballs and worktree transfers are signed with the mesh CA key and verified on receipt.
+- Each daemon has a leaf TLS cert signed by the mesh CA. `hush invite` issues a join token; the joining machine POSTs to `/join`, receives a signed cert, and joins the mesh. The CA private key never leaves the CA-origin machine.
 
 ---
 

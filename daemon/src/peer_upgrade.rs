@@ -27,7 +27,6 @@ use tar::Builder as TarBuilder;
 use tokio::sync::{broadcast, Mutex};
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::Connector;
 use tracing::{info, warn};
 
 use crate::protocol::ServerMessage;
@@ -44,10 +43,13 @@ pub struct InboundUpgrade {
     pub upgrade_id: String,
     pub from_machine_id: String,
     pub version: String,
+    #[allow(dead_code)]
     pub total_bytes: u64,
     pub bytes_received: u64,
     pub file: Option<std::fs::File>,
     pub temp_path: PathBuf,
+    /// Base64-encoded ECDSA signature of the tarball from the source.
+    pub signature: Option<String>,
 }
 
 impl InboundUpgrade {
@@ -69,17 +71,6 @@ pub type InboundUpgrades = Arc<Mutex<HashMap<String, InboundUpgrade>>>;
 
 pub fn new_inbound_upgrades() -> InboundUpgrades {
     Arc::new(Mutex::new(HashMap::new()))
-}
-
-// ─── TLS connector ────────────────────────────────────────────────────────────
-
-fn make_tls_connector() -> Connector {
-    let tls = native_tls::TlsConnector::builder()
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
-        .build()
-        .expect("Failed to build TLS connector");
-    Connector::NativeTls(tls.into())
 }
 
 // ─── Platform identifier ─────────────────────────────────────────────────────
@@ -173,11 +164,43 @@ pub async fn send_upgrade(
         }
     };
 
-    // 2. Dial destination
-    let connector = make_tls_connector();
+    // 1b. Sign the tarball with the mesh CA key for integrity verification
+    let ca_pems = crate::tls::read_ca_pems_from_state(&state_path);
+    let signature_b64 = if let (Some(ref _cert), Some(ref key)) = ca_pems {
+        match std::fs::read(&tarball_path) {
+            Ok(tarball_bytes) => match crate::tls::sign_with_ca(key, &tarball_bytes) {
+                Ok(sig) => {
+                    use base64::Engine;
+                    Some(base64::engine::general_purpose::STANDARD.encode(&sig))
+                }
+                Err(e) => {
+                    warn!("Failed to sign upgrade tarball: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!("Failed to read tarball for signing: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // 2. Dial destination on /peer endpoint with mTLS client identity
+    let peer_url = crate::gossip::to_peer_url(&dest_url);
+    let hush_dir = state_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let leaf_cert = std::fs::read(hush_dir.join("tls").join("cert.pem")).ok();
+    let leaf_key = std::fs::read(hush_dir.join("tls").join("key.pem")).ok();
+    let connector = match (leaf_cert.as_deref(), leaf_key.as_deref()) {
+        (Some(cert), Some(key)) => {
+            crate::tls::make_peer_tls_connector_with_identity(ca_pems.0.as_deref(), cert, key)
+        }
+        _ => crate::tls::make_peer_tls_connector(ca_pems.0.as_deref()),
+    };
     let (mut ws, _) = match tokio::time::timeout(
         DIAL_TIMEOUT,
-        connect_async_tls_with_config(&dest_url, None, false, Some(connector)),
+        connect_async_tls_with_config(&peer_url, None, false, Some(connector)),
     )
     .await
     {
@@ -195,7 +218,7 @@ pub async fn send_upgrade(
     };
 
     // 3. Send UpgradeOffer
-    let offer = serde_json::json!({
+    let mut offer = serde_json::json!({
         "type": "upgrade_offer",
         "upgrade_id": &upgrade_id,
         "from_machine_id": &machine_id,
@@ -203,6 +226,9 @@ pub async fn send_upgrade(
         "platform": local_platform(),
         "total_bytes": total_bytes,
     });
+    if let Some(sig) = &signature_b64 {
+        offer["signature"] = serde_json::Value::String(sig.clone());
+    }
     if let Err(e) = ws.send(Message::Text(offer.to_string().into())).await {
         fail(format!("send offer: {e}"));
         let _ = std::fs::remove_file(&tarball_path);
@@ -373,6 +399,7 @@ pub async fn apply_upgrade(
     mut upgrade: InboundUpgrade,
     tx: broadcast::Sender<ServerMessage>,
     machine_id: String,
+    state_path: PathBuf,
 ) {
     let upgrade_id = upgrade.upgrade_id.clone();
     let version = upgrade.version.clone();
@@ -382,6 +409,71 @@ pub async fn apply_upgrade(
         upgrade.from_machine_id
     );
     upgrade.close_file();
+
+    // Verify tarball signature against mesh CA
+    if let Some(sig_b64) = &upgrade.signature {
+        use base64::Engine;
+        match base64::engine::general_purpose::STANDARD.decode(sig_b64) {
+            Ok(sig_bytes) => {
+                let ca_pems = crate::tls::read_ca_pems_from_state(&state_path);
+                if let (Some(cert_pem), _) = ca_pems {
+                    match std::fs::read(&upgrade.temp_path) {
+                        Ok(tarball_bytes) => {
+                            match crate::tls::verify_ca_signature(
+                                &cert_pem,
+                                &tarball_bytes,
+                                &sig_bytes,
+                            ) {
+                                Ok(true) => {
+                                    info!("Upgrade {upgrade_id}: signature verified");
+                                }
+                                Ok(false) => {
+                                    warn!("Upgrade {upgrade_id}: signature verification FAILED — rejecting");
+                                    let _ = tx.send(ServerMessage::UpgradeError {
+                                        machine_id,
+                                        upgrade_id,
+                                        message: "signature verification failed".to_string(),
+                                    });
+                                    return;
+                                }
+                                Err(e) => {
+                                    warn!("Upgrade {upgrade_id}: signature verify error: {e} — rejecting");
+                                    let _ = tx.send(ServerMessage::UpgradeError {
+                                        machine_id,
+                                        upgrade_id,
+                                        message: format!("signature verify error: {e}"),
+                                    });
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Upgrade {upgrade_id}: failed to read tarball for verification: {e}"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Upgrade {upgrade_id}: invalid signature encoding: {e} — rejecting");
+                let _ = tx.send(ServerMessage::UpgradeError {
+                    machine_id,
+                    upgrade_id,
+                    message: "invalid signature encoding".to_string(),
+                });
+                return;
+            }
+        }
+    } else {
+        warn!("Upgrade {upgrade_id}: no signature provided — rejecting unsigned upgrade");
+        let _ = tx.send(ServerMessage::UpgradeError {
+            machine_id,
+            upgrade_id,
+            message: "unsigned upgrade rejected".to_string(),
+        });
+        return;
+    }
 
     let temp_path = upgrade.temp_path.clone();
     let result =

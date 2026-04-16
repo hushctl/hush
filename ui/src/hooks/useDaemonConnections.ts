@@ -82,9 +82,30 @@ export function useDaemonConnections() {
       };
       wsMap.current.set(daemon.url, entry);
 
-      function connect(url: string, daemonId: string) {
+      async function connect(url: string, daemonId: string) {
         if (entry.unmounted) return;
-        const ws = new WebSocket(url);
+
+        // Fetch auth token from the daemon's /config endpoint
+        let wsUrl = url;
+        try {
+          const configUrl = url
+            .replace(/\/ws$/, "/config")
+            .replace(/^wss:/, "https:")
+            .replace(/^ws:/, "http:");
+          const res = await fetch(configUrl);
+          if (res.ok) {
+            const config = await res.json();
+            if (config.token) {
+              const sep = url.includes("?") ? "&" : "?";
+              wsUrl = `${url}${sep}token=${config.token}`;
+            }
+          }
+        } catch {
+          // Fall through — daemon may not support /config yet
+        }
+
+        if (entry.unmounted) return;
+        const ws = new WebSocket(wsUrl);
         entry.ws = ws;
 
         // Register a send fn immediately using the known id; it may be

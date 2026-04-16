@@ -34,7 +34,7 @@ Violating any of these requires explicit discussion first.
 - **Status comes from hooks, never from parsing pty bytes.** The pty stream is opaque. All structured state flows from `mc-hook` events.
 - **Command bar = workspace intent only.** It does not relay text to any worktree. Typing into the command bar sends nothing to Claude. To talk to Claude, focus the terminal pane and type there.
 - **All Claude Code sessions are daemon-spawned.** No hybrid model of "some in iTerm, some in Mission Control."
-- **Local-first, no external database.** `~/.mission-control/state.json` for daemon state; `~/.claude/` for conversation history. Nothing external in v1.
+- **Local-first, no external database.** `~/.hush/state.json` for daemon state; `~/.claude/` for conversation history. Nothing external in v1.
 - **Visual language: flat, square corners, font-weight 400, no gradients, no shadows.** No border-radius anywhere.
 
 ---
@@ -62,8 +62,8 @@ Violating any of these requires explicit discussion first.
 
 **Daemon responsibilities:**
 1. **Pty manager** — one long-lived `claude` process per worktree. Scrollback buffer fanned out to all attached browsers. Survives browser disconnects (tmux model).
-2. **Hook listener** — Unix socket at `~/.mission-control/hooks.sock`. Hook events drive the status state machine and broadcast `status_change` to the browser.
-3. **State persistence** — `~/.mission-control/state.json`: worktree registry, last known status, grid positions, layout prefs.
+2. **Hook listener** — Unix socket at `~/.hush/hooks.sock`. Hook events drive the status state machine and broadcast `status_change` to the browser.
+3. **State persistence** — `~/.hush/state.json`: worktree registry, last known status, grid positions, layout prefs.
 4. **Worktree lifecycle** — `git worktree add/remove` on create/delete. Writes `.claude/settings.json` to register `mc-hook` for each new worktree.
 
 Daemon binds to `localhost:9111` in v1. No auth, no tunneling.
@@ -114,7 +114,7 @@ Each worktree's `.claude/settings.json` registers the shim:
 
 **Two layers:**
 - `~/.claude/` — Claude Code owns this. Full conversation history per session (jsonl). `claude --continue` resumes from here.
-- `~/.mission-control/state.json` — Daemon owns this. Worktree registry, last status, grid positions, layout prefs. Ptys are runtime-only (die with daemon).
+- `~/.hush/state.json` — Daemon owns this. Worktree registry, last status, grid positions, layout prefs. Ptys are runtime-only (die with daemon).
 
 **On restart:**
 1. Daemon reads `state.json`, sees known worktrees.
@@ -171,7 +171,7 @@ The command bar expresses intent about the workspace layout, not messages to Cla
 | Daemon | Rust — `axum` + `tokio` |
 | Pty management | `portable-pty` (same crate as Wezterm) |
 | Hook transport | Unix domain socket + `mc-hook` shim |
-| Daemon state | `~/.mission-control/state.json` |
+| Daemon state | `~/.hush/state.json` (migrated from `~/.mission-control/`) |
 | Conversation history | Claude Code's `~/.claude/` (via `--continue`) |
 | Voice (v2) | Web Speech API → Claude intent parsing |
 | Cross-project AI (v2) | Claude API |

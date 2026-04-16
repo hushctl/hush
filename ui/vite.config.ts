@@ -10,6 +10,9 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  test: {
+    exclude: ['e2e/**', 'node_modules/**'],
+  },
   server: {
     // Browser connects directly to daemon WebSocket URLs — no proxy needed.
     // Default daemon: ws://localhost:9111/ws

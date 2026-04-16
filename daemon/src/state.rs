@@ -375,3 +375,157 @@ impl DaemonState {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn make_state(machine_id: &str) -> DaemonState {
+        let mut s = DaemonState::default();
+        s.machine_id = machine_id.to_string();
+        s
+    }
+
+    fn make_peer(id: &str, url: &str) -> PeerInfo {
+        PeerInfo {
+            machine_id: id.to_string(),
+            url: url.to_string(),
+            last_seen: 1000,
+            version: "0.12.0".to_string(),
+        }
+    }
+
+    #[test]
+    fn merge_peer_adds_new() {
+        let mut s = make_state("me");
+        s.merge_peer(make_peer("other", "wss://other:9111/ws"));
+        assert_eq!(s.peers.len(), 1);
+        assert_eq!(s.peers[0].machine_id, "other");
+    }
+
+    #[test]
+    fn merge_peer_updates_existing() {
+        let mut s = make_state("me");
+        s.merge_peer(make_peer("other", "wss://old:9111/ws"));
+        s.merge_peer(PeerInfo {
+            machine_id: "other".to_string(),
+            url: "wss://new:9111/ws".to_string(),
+            last_seen: 2000,
+            version: "0.12.1".to_string(),
+        });
+        assert_eq!(s.peers.len(), 1);
+        assert_eq!(s.peers[0].url, "wss://new:9111/ws");
+        assert_eq!(s.peers[0].last_seen, 2000);
+    }
+
+    #[test]
+    fn merge_peer_ignores_self() {
+        let mut s = make_state("me");
+        s.merge_peer(make_peer("me", "wss://me:9111/ws"));
+        assert!(s.peers.is_empty());
+    }
+
+    #[test]
+    fn merge_peer_ignores_empty_url() {
+        let mut s = make_state("me");
+        s.merge_peer(make_peer("other", ""));
+        assert!(s.peers.is_empty());
+    }
+
+    #[test]
+    fn prune_stale_removes_old_peers() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut s = make_state("me");
+        s.merge_peer(PeerInfo {
+            machine_id: "old".to_string(),
+            url: "wss://old:9111/ws".to_string(),
+            last_seen: 1, // very old
+            version: String::new(),
+        });
+        s.merge_peer(PeerInfo {
+            machine_id: "recent".to_string(),
+            url: "wss://recent:9111/ws".to_string(),
+            last_seen: now, // just now
+            version: "0.12.0".to_string(),
+        });
+        s.prune_stale(500); // anything older than 500s from now
+        // "old" should be pruned, "recent" should remain
+        assert_eq!(s.peers.len(), 1);
+        assert_eq!(s.peers[0].machine_id, "recent");
+    }
+
+    #[test]
+    fn prune_stale_keeps_zero_last_seen() {
+        let mut s = make_state("me");
+        s.merge_peer(PeerInfo {
+            machine_id: "new".to_string(),
+            url: "wss://new:9111/ws".to_string(),
+            last_seen: 0, // never contacted yet
+            version: String::new(),
+        });
+        s.prune_stale(1);
+        assert_eq!(s.peers.len(), 1);
+    }
+
+    #[test]
+    fn register_project_is_idempotent() {
+        let mut s = make_state("me");
+        let p1 = s.register_project(PathBuf::from("/tmp/proj"), "proj".to_string());
+        let p2 = s.register_project(PathBuf::from("/tmp/proj"), "proj".to_string());
+        assert_eq!(p1.id, p2.id);
+        assert_eq!(s.projects.len(), 1);
+    }
+
+    #[test]
+    fn add_and_find_worktree() {
+        let mut s = make_state("me");
+        s.register_project(PathBuf::from("/tmp/proj"), "proj".to_string());
+        let wt = s
+            .add_worktree("proj_1", "main".to_string(), PathBuf::from("/tmp/proj/main"), "default".to_string())
+            .unwrap();
+        assert!(s.find_worktree(&wt.id).is_some());
+        assert_eq!(s.find_worktree(&wt.id).unwrap().branch, "main");
+    }
+
+    #[test]
+    fn remove_worktree_returns_removed() {
+        let mut s = make_state("me");
+        s.register_project(PathBuf::from("/tmp/proj"), "proj".to_string());
+        let wt = s
+            .add_worktree("proj_1", "main".to_string(), PathBuf::from("/tmp/proj/main"), "default".to_string())
+            .unwrap();
+        let removed = s.remove_worktree(&wt.id);
+        assert!(removed.is_some());
+        assert!(s.find_worktree(&wt.id).is_none());
+    }
+
+    #[test]
+    fn remove_project_if_empty_keeps_nonempty() {
+        let mut s = make_state("me");
+        s.register_project(PathBuf::from("/tmp/proj"), "proj".to_string());
+        s.add_worktree("proj_1", "main".to_string(), PathBuf::from("/tmp/proj/main"), "default".to_string())
+            .unwrap();
+        s.remove_project_if_empty("proj_1");
+        assert_eq!(s.projects.len(), 1); // still there
+    }
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let mut s = make_state("roundtrip-machine");
+        s.register_project(PathBuf::from("/tmp/proj"), "proj".to_string());
+        s.merge_peer(make_peer("peer1", "wss://peer1:9111/ws"));
+        s.save(&path);
+
+        let loaded = DaemonState::load(&path);
+        assert_eq!(loaded.machine_id, "roundtrip-machine");
+        assert_eq!(loaded.projects.len(), 1);
+        assert_eq!(loaded.peers.len(), 1);
+    }
+}

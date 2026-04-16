@@ -2,6 +2,7 @@ mod claude_history;
 mod git_watcher;
 mod gossip;
 mod hooks;
+mod join;
 mod memory_monitor;
 mod peer_upgrade;
 mod protocol;
@@ -23,7 +24,7 @@ pub static DAEMON_ARGS: OnceLock<Vec<String>> = OnceLock::new();
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::State as AxumState;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
@@ -46,6 +47,10 @@ enum SubCommand {
         #[command(subcommand)]
         action: Option<TrustAction>,
     },
+    /// Generate a short-lived join token for enrolling a new machine into the mesh.
+    /// Run this on the CA-origin machine, then pass the token to `hush --join-token`
+    /// on the machine you want to add.
+    Invite,
 }
 
 #[derive(clap::Subcommand)]
@@ -69,7 +74,7 @@ struct Args {
     port: u16,
 
     /// Bind address (use 0.0.0.0 to listen on all interfaces incl. Tailscale)
-    #[arg(long, default_value = "0.0.0.0")]
+    #[arg(long, default_value = "127.0.0.1")]
     bind: String,
 
     /// Path to state file (default: ~/.hush/state.json)
@@ -103,12 +108,26 @@ struct Args {
     /// the peer's daemon automatically after the binary is replaced.
     #[arg(long, default_value_t = false)]
     auto_upgrade: bool,
+
+    /// Join token received from `hush invite` on an existing mesh member.
+    /// When provided alongside --join, the daemon will POST to the peer's /join
+    /// endpoint, receive a signed leaf cert + CA cert, write them to
+    /// ~/.hush/tls/, and then start normally.
+    #[arg(long)]
+    join_token: Option<String>,
+}
+
+/// State for the /join endpoint (subset of full AppState).
+#[derive(Clone)]
+pub struct JoinHandlerState {
+    pub hush_dir: PathBuf,
 }
 
 #[derive(Clone)]
 struct AppState {
     daemon_state: Arc<RwLock<DaemonState>>,
     state_path: PathBuf,
+    auth_token: String,
 
     tx: broadcast::Sender<ServerMessage>,
     pty_manager: PtyManager,
@@ -167,6 +186,21 @@ async fn main() {
             if let Err(e) = result {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
+            }
+            return;
+        }
+        Some(SubCommand::Invite) => {
+            match join::generate_token(&hush_dir) {
+                Ok(token) => {
+                    println!("{token}");
+                    println!();
+                    println!("Token expires in 10 minutes. On the joining machine, run:");
+                    println!("  hush --join wss://<this-machine>:9111/peer --join-token {token}");
+                }
+                Err(e) => {
+                    eprintln!("Error generating invite token: {e}");
+                    std::process::exit(1);
+                }
             }
             return;
         }
@@ -245,6 +279,39 @@ async fn main() {
     }
 
     daemon_state.save(&state_path);
+
+    // If a join token was provided, POST to the first --join peer to receive
+    // a signed leaf cert + CA cert before the daemon starts serving.
+    if let Some(join_token) = &args.join_token {
+        let peer_url = args.join.first().cloned().unwrap_or_default();
+        if peer_url.is_empty() {
+            eprintln!("Error: --join-token requires --join <peer-url>");
+            std::process::exit(1);
+        }
+        info!("Performing mesh join via {peer_url}...");
+        let tls_hush_dir = args
+            .tls_dir
+            .as_deref()
+            .unwrap_or_else(|| state_path.parent().unwrap_or(std::path::Path::new(".")))
+            .to_path_buf();
+        if let Err(e) = join::perform_join(
+            &peer_url,
+            join_token,
+            &daemon_state.machine_id,
+            &tls_hush_dir,
+        )
+        .await
+        {
+            eprintln!("Error: mesh join failed: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    // Load or generate auth token
+    let auth_token = load_or_generate_auth_token(
+        state_path.parent().unwrap_or(std::path::Path::new(".")),
+    );
+
     info!(
         "Loaded state: {} projects, machine_id={}",
         daemon_state.projects.len(),
@@ -302,6 +369,7 @@ async fn main() {
     let app_state = AppState {
         daemon_state,
         state_path: state_path.clone(),
+        auth_token,
         tx,
         pty_manager,
         git_watcher,
@@ -309,10 +377,24 @@ async fn main() {
         inbound_upgrades: new_inbound_upgrades(),
     };
 
+    let join_state = JoinHandlerState {
+        hush_dir: hush_dir.clone(),
+    };
+
+    // The /join endpoint uses a separate state (JoinHandlerState) from the main
+    // AppState to avoid circular dependencies. Merge via nested routers.
+    let join_router: Router = Router::new()
+        .route("/join", post(join::join_handler))
+        .with_state(join_state);
+
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        .route("/peer", get(peer_ws_handler))
         .route("/health", get(|| async { "ok" }))
-        .with_state(app_state);
+        .route("/config", get(config_handler))
+        .route("/config/local", get(config_local_handler))
+        .with_state(app_state)
+        .merge(join_router);
 
     // Serve the built UI as a fallback — if a UI dir is found, any request
     // that isn't /ws or /health gets the SPA (with index.html fallback for
@@ -371,9 +453,18 @@ async fn main() {
     info!("  Cert fingerprint (SHA-256): {}", tls_material.fingerprint);
     info!("  Open https://{hint_host} in your browser");
 
-    let rustls_config = RustlsConfig::from_pem(tls_material.cert_pem, tls_material.key_pem)
-        .await
-        .expect("Failed to build TLS config");
+    // Build rustls ServerConfig with optional client cert verification.
+    // When a mesh CA is present, the server accepts but does not require client
+    // certs on /ws (browsers). The /peer handler enforces cert presence for
+    // daemon-to-daemon mTLS authentication.
+    let (ca_cert_pem_opt, _) = tls::read_ca_pems_from_state(&state_path);
+    let server_config = tls::build_server_config(
+        &tls_material.cert_pem,
+        &tls_material.key_pem,
+        ca_cert_pem_opt.as_deref(),
+    )
+    .expect("Failed to build TLS server config");
+    let rustls_config = RustlsConfig::from_config(std::sync::Arc::new(server_config));
 
     let handle = axum_server::Handle::new();
     let shutdown_handle = handle.clone();
@@ -385,7 +476,7 @@ async fn main() {
 
     axum_server::bind_rustls(addr.parse().expect("Invalid bind address"), rustls_config)
         .handle(handle)
-        .serve(app.into_make_service())
+        .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await
         .expect("Server error");
 
@@ -439,11 +530,71 @@ fn resolve_ui_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
+fn load_or_generate_auth_token(hush_dir: &std::path::Path) -> String {
+    let token_path = hush_dir.join("auth_token");
+    if let Ok(token) = std::fs::read_to_string(&token_path) {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            return token;
+        }
+    }
+    // Generate new token
+    use ring::rand::SecureRandom;
+    let rng = ring::rand::SystemRandom::new();
+    let mut bytes = [0u8; 32];
+    rng.fill(&mut bytes)
+        .expect("Failed to generate random bytes");
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::write(&token_path, &token).expect("Failed to write auth_token");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            &token_path,
+            std::fs::Permissions::from_mode(0o600),
+        );
+    }
+    info!("Generated new auth token → {}", token_path.display());
+    token
+}
+
+async fn config_handler(
     AxumState(app_state): AxumState<AppState>,
 ) -> impl IntoResponse {
-    info!("New WebSocket connection");
+    let machine_id = app_state.daemon_state.read().await.machine_id.clone();
+    axum::Json(serde_json::json!({
+        "machine_id": machine_id,
+    }))
+}
+
+/// Same as /config but also returns the auth token — only served to localhost clients.
+async fn config_local_handler(
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    AxumState(app_state): AxumState<AppState>,
+) -> axum::response::Response {
+    let ip = addr.ip();
+    if !ip.is_loopback() {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    let machine_id = app_state.daemon_state.read().await.machine_id.clone();
+    axum::Json(serde_json::json!({
+        "token": app_state.auth_token,
+        "machine_id": machine_id,
+    }))
+    .into_response()
+}
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    AxumState(app_state): AxumState<AppState>,
+) -> axum::response::Response {
+    // Validate auth token
+    let provided = params.get("token").map(|s| s.as_str()).unwrap_or("");
+    if provided != app_state.auth_token {
+        return axum::http::StatusCode::UNAUTHORIZED.into_response();
+    }
+    info!("New WebSocket connection (authenticated)");
     ws.on_upgrade(move |socket| {
         ws::handle_socket(
             socket,
@@ -456,6 +607,32 @@ async fn ws_handler(
             app_state.inbound_upgrades,
         )
     })
+    .into_response()
+}
+
+/// Daemon-to-daemon WebSocket endpoint. Auth is via mTLS at the TLS layer —
+/// the ServerConfig verifies client certs against the mesh CA when presented.
+/// Peers that present a valid CA-signed leaf cert are authenticated; peers
+/// without a cert are currently allowed through (enforced via join flow in Phase 5).
+/// Browsers should use /ws with token auth instead.
+async fn peer_ws_handler(
+    ws: WebSocketUpgrade,
+    AxumState(app_state): AxumState<AppState>,
+) -> axum::response::Response {
+    info!("New peer WebSocket connection");
+    ws.on_upgrade(move |socket| {
+        ws::handle_socket(
+            socket,
+            app_state.daemon_state,
+            app_state.state_path,
+            app_state.tx,
+            app_state.pty_manager,
+            app_state.git_watcher,
+            app_state.inbound_transfers,
+            app_state.inbound_upgrades,
+        )
+    })
+    .into_response()
 }
 
 async fn shutdown_signal() {

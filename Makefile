@@ -1,4 +1,4 @@
-.PHONY: hooks check check-daemon check-ui build build-ui build-daemon install
+.PHONY: hooks check check-daemon check-ui build build-ui build-daemon install test test-daemon test-ui clean
 
 hooks:
 	./scripts/install-hooks.sh
@@ -30,4 +30,20 @@ install: build
 	@echo ""
 	@echo "Installed to ~/.local/bin/hush and ~/.hush/ui/"
 	@echo "Make sure ~/.local/bin is on your PATH, then run: hush"
+
+# ── Test ─────────────────────────────────────────────────────────────────────
+
+test: test-daemon test-ui
+
+test-daemon:
+	cd daemon && cargo test
+
+test-ui:
+	cd ui && npm test
+
+# ── Clean ────────────────────────────────────────────────────────────────────
+
+clean:
+	cd daemon && cargo clean
+	cd ui && rm -rf dist node_modules/.vite
 

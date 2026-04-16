@@ -16,7 +16,7 @@ export default defineConfig({
   // Start daemon + Vite before all tests
   webServer: [
     {
-      command: '/Users/admin/.cargo/bin/cargo run --manifest-path ../daemon/Cargo.toml --bin hush',
+      command: 'cargo run --manifest-path ../daemon/Cargo.toml --bin hush',
       url: 'https://localhost:9111/health',
       timeout: 30_000,
       reuseExistingServer: true,

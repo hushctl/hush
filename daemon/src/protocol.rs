@@ -114,12 +114,10 @@ pub enum ClientMessage {
         /// Sender's daemon version (e.g. "0.9.1"). Empty for pre-version peers.
         #[serde(default)]
         version: String,
-        /// CA cert PEM — sent so joining machines can adopt the mesh CA.
+        /// CA cert PEM (public only) — sent so joining machines can verify the mesh CA.
+        /// The CA private key is never transmitted over the wire.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ca_cert_pem: Option<String>,
-        /// CA private key PEM — sent so joining machines can sign their own leaf certs.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        ca_key_pem: Option<String>,
     },
 
     // ── Transfer: browser → source daemon ────────────────────────────────────
@@ -165,6 +163,10 @@ pub enum ClientMessage {
     /// Source signals that all bytes have been sent; destination should apply.
     TransferCommit {
         transfer_id: String,
+        /// Base64-encoded ECDSA signature over SHA-256(working_dir_tar_gz || history_tar).
+        /// Destination verifies this before applying the transfer.
+        #[serde(default)]
+        signature: Option<String>,
     },
     /// Either side can abort; destination should discard temp state.
     TransferAbort {
@@ -189,6 +191,9 @@ pub enum ClientMessage {
         platform: String,
         /// Total compressed bytes that will follow as binary frames.
         total_bytes: u64,
+        /// Base64-encoded ECDSA signature of the tarball (optional for backward compat).
+        #[serde(default)]
+        signature: Option<String>,
     },
     /// Source signals that all binary frames have been sent; destination should apply.
     UpgradeCommit {
@@ -217,6 +222,7 @@ pub enum ServerMessage {
         machine_id: String,
         worktrees: Vec<WorktreeInfo>,
     },
+    #[allow(dead_code)]
     SessionEnded {
         machine_id: String,
         worktree_id: String,
@@ -267,12 +273,10 @@ pub enum ServerMessage {
         /// Sender's daemon version (e.g. "0.9.1").
         #[serde(default)]
         version: String,
-        /// CA cert PEM — sent so joining machines can adopt the mesh CA.
+        /// CA cert PEM (public only) — sent so joining machines can verify the mesh CA.
+        /// The CA private key is never transmitted over the wire.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ca_cert_pem: Option<String>,
-        /// CA private key PEM — sent so joining machines can sign their own leaf certs.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        ca_key_pem: Option<String>,
     },
 
     // ── Peer upgrade responses (destination → source) ─────────────────────────
@@ -404,4 +408,101 @@ pub struct WorktreeInfo {
     /// Whether a shell pty is currently alive for this worktree.
     #[serde(default)]
     pub shell_alive: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_register_project() {
+        let json = r#"{"type":"register_project","path":"/tmp/p","name":"p"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, ClientMessage::RegisterProject { .. }));
+    }
+
+    #[test]
+    fn deserialize_pty_attach() {
+        let json = r#"{"type":"pty_attach","worktree_id":"wt_1","cols":80,"rows":24}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, ClientMessage::PtyAttach { cols: 80, rows: 24, .. }));
+    }
+
+    #[test]
+    fn deserialize_list_projects() {
+        let json = r#"{"type":"list_projects"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, ClientMessage::ListProjects));
+    }
+
+    #[test]
+    fn deserialize_upgrade_offer_with_signature() {
+        let json = r#"{"type":"upgrade_offer","upgrade_id":"up-1","from_machine_id":"m1","version":"0.12.0","platform":"darwin-aarch64","total_bytes":1000,"signature":"c2lnbmF0dXJl"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::UpgradeOffer { signature, .. } => {
+                assert_eq!(signature.unwrap(), "c2lnbmF0dXJl");
+            }
+            _ => panic!("expected UpgradeOffer"),
+        }
+    }
+
+    #[test]
+    fn deserialize_upgrade_offer_without_signature() {
+        let json = r#"{"type":"upgrade_offer","upgrade_id":"up-1","from_machine_id":"m1","version":"0.12.0","platform":"darwin-aarch64","total_bytes":1000}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::UpgradeOffer { signature, .. } => {
+                assert!(signature.is_none());
+            }
+            _ => panic!("expected UpgradeOffer"),
+        }
+    }
+
+    #[test]
+    fn serialize_status_change() {
+        let msg = ServerMessage::StatusChange {
+            machine_id: "m1".to_string(),
+            worktree_id: "wt_1".to_string(),
+            status: "running".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"status_change""#));
+        assert!(json.contains(r#""machine_id":"m1""#));
+    }
+
+    #[test]
+    fn serialize_project_list() {
+        let msg = ServerMessage::ProjectList {
+            machine_id: "m1".to_string(),
+            projects: vec![ProjectInfo {
+                id: "proj_1".to_string(),
+                name: "test".to_string(),
+                path: "/tmp".to_string(),
+                worktree_count: 0,
+                machine_id: "m1".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"project_list""#));
+        assert!(json.contains(r#""name":"test""#));
+    }
+
+    #[test]
+    fn deserialize_unknown_type_is_error() {
+        let json = r#"{"type":"nonexistent_message"}"#;
+        assert!(serde_json::from_str::<ClientMessage>(json).is_err());
+    }
+
+    #[test]
+    fn worktree_status_as_str() {
+        use crate::state::WorktreeStatus;
+        assert_eq!(WorktreeStatus::Idle.as_str(), "idle");
+        assert_eq!(WorktreeStatus::Running.as_str(), "running");
+        assert_eq!(WorktreeStatus::NeedsYou.as_str(), "needs_you");
+        assert_eq!(
+            WorktreeStatus::Failed("boom".to_string()).as_str(),
+            "failed: boom"
+        );
+    }
 }

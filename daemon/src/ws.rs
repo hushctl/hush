@@ -846,7 +846,6 @@ async fn handle_client_message(
                 peers,
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 ca_cert_pem: None,
-                ca_key_pem: None,
             });
         }
 
@@ -1088,6 +1087,7 @@ async fn handle_client_message(
                         working_dir_path: wd_path,
                         history_file: None,
                         history_path: hist_path,
+                        signature: None,
                     },
                 );
             }
@@ -1125,9 +1125,16 @@ async fn handle_client_message(
             t.current_kind = kind;
         }
 
-        ClientMessage::TransferCommit { transfer_id } => {
+        ClientMessage::TransferCommit {
+            transfer_id,
+            signature,
+        } => {
             let t = {
                 let mut map = inbound_transfers.lock().await;
+                // Store signature before removing so apply_transfer can verify it
+                if let Some(ref mut t) = map.get_mut(&transfer_id) {
+                    t.signature = signature;
+                }
                 map.remove(&transfer_id)
             };
             let Some(t) = t else {
@@ -1213,6 +1220,7 @@ async fn handle_client_message(
             version,
             platform,
             total_bytes,
+            signature,
         } => {
             // Source daemon is offering a binary upgrade.
             let machine_id = state.read().await.machine_id.clone();
@@ -1263,6 +1271,7 @@ async fn handle_client_message(
                     bytes_received: 0,
                     file: Some(file),
                     temp_path: tmp_path,
+                    signature,
                 },
             );
 
@@ -1277,7 +1286,7 @@ async fn handle_client_message(
             let upgrade = inbound_upgrades.lock().await.remove(&upgrade_id);
             if let Some(upgrade) = upgrade {
                 let machine_id = state.read().await.machine_id.clone();
-                tokio::spawn(pu::apply_upgrade(upgrade, tx, machine_id));
+                tokio::spawn(pu::apply_upgrade(upgrade, tx, machine_id, state_path.clone()));
             } else {
                 warn!("UpgradeCommit for unknown upgrade {upgrade_id}");
             }
@@ -1289,7 +1298,6 @@ async fn handle_client_message(
             peers: sender_peers,
             version: sender_version,
             ca_cert_pem: _sender_ca_cert,
-            ca_key_pem: _sender_ca_key,
         } => {
             // Merge sender + their known peers into our state
             {
@@ -1307,18 +1315,17 @@ async fn handle_client_message(
                 s.merge_peers(sender_peers);
                 s.save(&state_path);
             }
-            // Reply with our peer list + CA so the dialing peer can adopt it
+            // Reply with our peer list + CA cert (public only, never the private key)
             let (machine_id, peers) = {
                 let s = state.read().await;
                 (s.machine_id.clone(), s.known_peers())
             };
-            let (ca_cert_pem, ca_key_pem) = crate::tls::read_ca_pems_from_state(&state_path);
+            let (ca_cert_pem, _) = crate::tls::read_ca_pems_from_state(&state_path);
             let _ = tx.send(ServerMessage::PeerList {
                 machine_id,
                 peers,
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 ca_cert_pem,
-                ca_key_pem,
             });
         }
     }

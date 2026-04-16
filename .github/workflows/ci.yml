@@ -117,6 +117,21 @@ jobs:
         working-directory: daemon
         run: cargo audit
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Audit UI dependencies
+        working-directory: ui
+        run: npm audit --audit-level=high
+
       - name: Check for unsafe code
         working-directory: daemon
         run: |

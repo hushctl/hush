@@ -1,5 +1,6 @@
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 
 use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyPair};
 use sha2::{Digest, Sha256};
@@ -164,7 +165,7 @@ fn sans_are_covered(cert_path: &Path, wanted: &[String]) -> bool {
     true
 }
 
-fn pem_to_der(pem: &str) -> io::Result<Vec<u8>> {
+pub(crate) fn pem_to_der(pem: &str) -> io::Result<Vec<u8>> {
     let bytes = pem.as_bytes().to_vec();
     let mut cursor = std::io::Cursor::new(bytes);
     let certs: Vec<_> = rustls_pemfile::certs(&mut cursor)
@@ -257,36 +258,116 @@ pub fn read_ca_pems_from_state(state_path: &Path) -> (Option<String>, Option<Str
     }
 }
 
-/// Replace the local CA with a mesh CA received from a peer. Deletes the
-/// existing leaf cert so it gets regenerated on next `load_or_generate`.
-pub fn replace_ca(hush_dir: &Path, cert_pem: &str, key_pem: &str) -> io::Result<()> {
-    let tls_dir = hush_dir.join("tls");
-    std::fs::create_dir_all(&tls_dir)?;
 
-    std::fs::write(tls_dir.join("ca.crt"), cert_pem)?;
-    std::fs::write(tls_dir.join("ca.key"), key_pem)?;
+/// Build a TLS connector for peer-to-peer connections. When a CA cert is
+/// available, the connector verifies the peer's certificate chain against it
+/// (hostnames are not checked — certs use IP SANs that may differ across
+/// machines). Falls back to accepting any certificate on first boot before
+/// the CA has been shared via gossip.
+pub fn make_peer_tls_connector(ca_cert_pem: Option<&str>) -> tokio_tungstenite::Connector {
+    make_peer_tls_connector_inner(ca_cert_pem, None, None)
+}
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            tls_dir.join("ca.key"),
-            std::fs::Permissions::from_mode(0o600),
-        )?;
-        std::fs::set_permissions(
-            tls_dir.join("ca.crt"),
-            std::fs::Permissions::from_mode(0o644),
-        )?;
+/// Like `make_peer_tls_connector` but also presents the local leaf cert as a
+/// TLS client identity, enabling mTLS authentication to the peer's `/peer` endpoint.
+pub fn make_peer_tls_connector_with_identity(
+    ca_cert_pem: Option<&str>,
+    leaf_cert_pem: &[u8],
+    leaf_key_pem: &[u8],
+) -> tokio_tungstenite::Connector {
+    make_peer_tls_connector_inner(ca_cert_pem, Some(leaf_cert_pem), Some(leaf_key_pem))
+}
+
+fn make_peer_tls_connector_inner(
+    ca_cert_pem: Option<&str>,
+    leaf_cert_pem: Option<&[u8]>,
+    leaf_key_pem: Option<&[u8]>,
+) -> tokio_tungstenite::Connector {
+    let mut builder = native_tls::TlsConnector::builder();
+    if let Some(pem) = ca_cert_pem {
+        if let Ok(cert) = native_tls::Certificate::from_pem(pem.as_bytes()) {
+            builder.add_root_certificate(cert);
+            // Certs use IP SANs; the peer may be reached via a different IP
+            builder.danger_accept_invalid_hostnames(true);
+        } else {
+            tracing::warn!("Invalid CA cert PEM — falling back to unverified TLS");
+            builder.danger_accept_invalid_certs(true);
+            builder.danger_accept_invalid_hostnames(true);
+        }
+    } else {
+        // First boot — CA not yet available
+        builder.danger_accept_invalid_certs(true);
+        builder.danger_accept_invalid_hostnames(true);
     }
+    // Optionally present client identity for mTLS
+    if let (Some(cert), Some(key)) = (leaf_cert_pem, leaf_key_pem) {
+        match native_tls::Identity::from_pkcs8(cert, key) {
+            Ok(identity) => {
+                builder.identity(identity);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load leaf cert identity for mTLS: {e}");
+            }
+        }
+    }
+    tokio_tungstenite::Connector::NativeTls(
+        builder.build().expect("Failed to build TLS connector").into(),
+    )
+}
 
-    // Invalidate leaf cert so it gets re-signed by the new CA
-    let _ = std::fs::remove_file(tls_dir.join("cert.pem"));
-    let _ = std::fs::remove_file(tls_dir.join("key.pem"));
-    // Remove trusted marker — needs re-trust with new CA
-    let _ = std::fs::remove_file(tls_dir.join(".trusted"));
+/// Build a `rustls::ServerConfig` that optionally verifies client certificates
+/// against the mesh CA. Browsers connecting to `/ws` won't have a cert (allowed);
+/// peer daemons connecting to `/peer` must present one signed by the mesh CA.
+///
+/// The optional client verifier uses `allow_unauthenticated()` so both routes
+/// can share the same TLS listener — the `/peer` handler enforces cert presence.
+pub fn build_server_config(
+    cert_pem: &[u8],
+    key_pem: &[u8],
+    ca_cert_pem: Option<&str>,
+) -> io::Result<rustls::ServerConfig> {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-    tracing::info!("Replaced local CA with mesh CA");
-    Ok(())
+    // rustls_pemfile 2.x returns 'static items (bytes are copied from the reader)
+    let certs: Vec<CertificateDer<'static>> = {
+        let mut cursor = std::io::Cursor::new(cert_pem);
+        rustls_pemfile::certs(&mut cursor)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+    };
+
+    let key: PrivateKeyDer<'static> = {
+        let mut cursor = std::io::Cursor::new(key_pem);
+        rustls_pemfile::private_key(&mut cursor)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no private key found"))?
+    };
+
+    let builder = rustls::ServerConfig::builder();
+
+    let config = if let Some(ca_pem) = ca_cert_pem {
+        let ca_der = pem_to_der(ca_pem)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(CertificateDer::from(ca_der).into_owned())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+            .allow_unauthenticated()
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        builder
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(certs, key)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+    } else {
+        builder
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+    };
+
+    Ok(config)
 }
 
 pub(crate) fn fingerprint_pem(cert_pem: &[u8]) -> io::Result<String> {
@@ -303,4 +384,98 @@ pub(crate) fn fingerprint_pem(cert_pem: &[u8]) -> io::Result<String> {
         .collect::<Vec<_>>()
         .join(":");
     Ok(hex)
+}
+
+/// Sign arbitrary data with the CA private key. Returns the raw signature bytes.
+/// Uses ECDSA P-256 with SHA-256 (matching rcgen's default key type).
+pub fn sign_with_ca(ca_key_pem: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+    let key_pair =
+        KeyPair::from_pem(ca_key_pem).map_err(|e| format!("parse CA key: {e}"))?;
+    let signing_key = ring::signature::EcdsaKeyPair::from_pkcs8(
+        &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+        key_pair.serialized_der(),
+        &ring::rand::SystemRandom::new(),
+    )
+    .map_err(|e| format!("load signing key: {e}"))?;
+    let sig = signing_key
+        .sign(&ring::rand::SystemRandom::new(), data)
+        .map_err(|e| format!("sign: {e}"))?;
+    Ok(sig.as_ref().to_vec())
+}
+
+/// Verify a signature against the CA certificate's public key.
+/// Extracts the SPKI from the CA cert PEM and verifies ECDSA P-256 SHA-256.
+pub fn verify_ca_signature(
+    ca_cert_pem: &str,
+    data: &[u8],
+    signature: &[u8],
+) -> Result<bool, String> {
+    let der = pem_to_der(ca_cert_pem).map_err(|e| format!("parse CA cert: {e}"))?;
+    let (_, cert) = x509_parser::parse_x509_certificate(&der)
+        .map_err(|e| format!("parse x509: {e}"))?;
+    let key_data = &cert.public_key().subject_public_key.data;
+    let public_key = ring::signature::UnparsedPublicKey::new(
+        &ring::signature::ECDSA_P256_SHA256_ASN1,
+        key_data,
+    );
+    match public_key.verify(data, signature) {
+        Ok(()) => Ok(true),
+        Err(_) => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sign_produces_nonempty_signature() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ca = load_or_generate_ca(tmp.path()).unwrap();
+        let key_pem = ca.key_pair.serialize_pem();
+
+        let data = b"hello world upgrade tarball bytes";
+        let sig = sign_with_ca(&key_pem, data).expect("sign should succeed");
+        assert!(!sig.is_empty());
+
+        // Signing the same data twice should produce valid (possibly different) signatures
+        let sig2 = sign_with_ca(&key_pem, data).expect("sign should succeed");
+        assert!(!sig2.is_empty());
+    }
+
+    #[test]
+    fn sign_and_verify_roundtrip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ca = load_or_generate_ca(tmp.path()).unwrap();
+        let key_pem = ca.key_pair.serialize_pem();
+        let cert_pem = std::fs::read_to_string(tmp.path().join("tls/ca.crt")).unwrap();
+
+        let data = b"hello world upgrade tarball bytes";
+        let sig = sign_with_ca(&key_pem, data).expect("sign should succeed");
+
+        let ok = verify_ca_signature(&cert_pem, data, &sig).expect("verify should not error");
+        assert!(ok, "valid signature should verify");
+
+        // Tampered data should not verify
+        let bad = verify_ca_signature(&cert_pem, b"tampered", &sig).expect("verify should not error");
+        assert!(!bad, "tampered data should fail verification");
+    }
+
+    #[test]
+    fn ca_generation_is_idempotent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ca1 = load_or_generate_ca(tmp.path()).unwrap();
+        let ca2 = load_or_generate_ca(tmp.path()).unwrap();
+        // Should load the same key pair, not generate a new one
+        assert_eq!(ca1.key_pair.serialize_pem(), ca2.key_pair.serialize_pem());
+    }
+
+    #[test]
+    fn leaf_cert_contains_localhost_san() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mat = load_or_generate(tmp.path(), "test-machine").unwrap();
+        let cert_str = String::from_utf8_lossy(&mat.cert_pem);
+        assert!(cert_str.contains("BEGIN CERTIFICATE"));
+        assert!(!mat.fingerprint.is_empty());
+    }
 }

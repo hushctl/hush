@@ -17,7 +17,6 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::time::{interval, MissedTickBehavior};
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::Connector;
 use tracing::{debug, info};
 
 use crate::peer_upgrade;
@@ -34,22 +33,22 @@ fn parse_version(s: &str) -> (u32, u32, u32) {
     (major, minor, patch)
 }
 
-/// Build a TLS connector that accepts any certificate from gossip peers.
-/// Network-layer trust (Tailscale, etc.) provides peer authenticity; TLS here
-/// only prevents cleartext interception. TOFU pinning is a future follow-up.
-fn make_tls_connector() -> Connector {
-    let tls = native_tls::TlsConnector::builder()
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
-        .build()
-        .expect("Failed to build native TLS connector");
-    Connector::NativeTls(tls.into())
-}
-
 const GOSSIP_INTERVAL: Duration = Duration::from_secs(30);
 const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Prune peers not seen for 24 hours.
 const STALE_AFTER_SECS: u64 = 24 * 3600;
+
+/// Convert a stored peer URL (e.g. `wss://host:9111/ws`) to the daemon-to-daemon
+/// `/peer` endpoint. Replaces a trailing `/ws` path segment; falls back to
+/// appending `/peer` if the URL does not end with `/ws`.
+pub(crate) fn to_peer_url(url: &str) -> String {
+    if let Some(base) = url.strip_suffix("/ws") {
+        format!("{base}/peer")
+    } else {
+        // Already a /peer URL or an unexpected shape — return as-is.
+        url.to_string()
+    }
+}
 
 pub fn spawn_gossip(
     state: Arc<RwLock<DaemonState>>,
@@ -105,16 +104,19 @@ async fn run_gossip_round(
 
     debug!("gossip round: dialling {} peer(s)", peers.len());
 
-    // Read our CA to include in hello messages
+    // Read our CA cert and leaf cert for mTLS client identity
     let my_ca = crate::tls::read_ca_pems_from_state(state_path);
+    let hush_dir = state_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let leaf_cert = std::fs::read(hush_dir.join("tls").join("cert.pem")).ok();
+    let leaf_key = std::fs::read(hush_dir.join("tls").join("key.pem")).ok();
 
     let mut newly_learned: Vec<PeerInfo> = Vec::new();
     // (machine_id, version) for each successfully contacted peer
     let mut contacted: Vec<(String, String)> = Vec::new();
     // Placeholder entries that turned out to point at ourselves — remove them.
     let mut self_placeholder_ids: Vec<String> = Vec::new();
-    // CA received from a peer (first one wins)
-    let mut received_ca: Option<(String, String, String)> = None; // (cert, key, from_machine)
+    // CA cert received from a peer (public only — key is never transmitted)
+    let mut received_ca_cert: Option<(String, String)> = None; // (cert_pem, from_machine)
 
     for peer in &peers {
         if peer.url.is_empty() {
@@ -125,7 +127,17 @@ async fn run_gossip_round(
             self_placeholder_ids.push(peer.machine_id.clone());
             continue;
         }
-        match dial_peer(&machine_id, &advertise_url, &peers, &peer.url, &my_ca).await {
+        match dial_peer(
+            &machine_id,
+            &advertise_url,
+            &peers,
+            &to_peer_url(&peer.url),
+            &my_ca,
+            leaf_cert.as_deref(),
+            leaf_key.as_deref(),
+        )
+        .await
+        {
             Ok(result) => {
                 // If the peer responded with our own machine_id it's a self-dial
                 // (e.g. stale --join seed pointing at our own IP or localhost).
@@ -137,10 +149,10 @@ async fn run_gossip_round(
                     self_placeholder_ids.push(peer.machine_id.clone());
                     continue;
                 }
-                // Capture CA from peer if we don't have a trusted one yet
-                if received_ca.is_none() {
-                    if let (Some(cert), Some(key)) = (result.ca_cert_pem, result.ca_key_pem) {
-                        received_ca = Some((cert, key, result.responder_id.clone()));
+                // Capture CA cert from peer if we don't have one yet (public cert only)
+                if received_ca_cert.is_none() {
+                    if let Some(cert) = result.ca_cert_pem {
+                        received_ca_cert = Some((cert, result.responder_id.clone()));
                     }
                 }
                 contacted.push((result.responder_id.clone(), result.responder_version));
@@ -160,24 +172,28 @@ async fn run_gossip_round(
         }
     }
 
-    // Adopt mesh CA if we received one and haven't trusted our own yet.
-    // This enables zero-config joining: `hush --join wss://peer:9111/ws` just works.
+    // Store mesh CA cert if we received one and don't have our own yet.
+    // Note: we only store the public cert. Signing a new leaf cert requires the
+    // CA private key, which is only available on the CA-origin machine.
+    // Use `hush invite` / `hush --join --join-token` for proper mesh enrollment.
     let hush_dir = state_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    if let Some((cert, key, from_machine)) = received_ca {
-        if !crate::trust::is_trusted(hush_dir) {
-            info!("Adopting mesh CA from peer '{from_machine}'");
-            if let Err(e) = crate::tls::replace_ca(hush_dir, &cert, &key) {
-                info!("Failed to replace CA: {e}");
+    if let Some((cert_pem, from_machine)) = received_ca_cert {
+        let ca_cert_path = hush_dir.join("tls").join("ca.crt");
+        if !ca_cert_path.exists() {
+            info!("Storing mesh CA cert from peer '{from_machine}' (public cert only)");
+            let tls_dir = hush_dir.join("tls");
+            if let Err(e) = std::fs::create_dir_all(&tls_dir) {
+                info!("Failed to create tls dir: {e}");
+            } else if let Err(e) = std::fs::write(&ca_cert_path, &cert_pem) {
+                info!("Failed to store CA cert: {e}");
             } else {
-                let ca_cert_path = hush_dir.join("tls").join("ca.crt");
+                // Attempt to trust — will only work for verification, not signing
                 match crate::trust::install_ca(&ca_cert_path) {
                     Ok(()) => {
                         crate::trust::write_trusted_marker(hush_dir);
-                        info!(
-                            "✓ Mesh CA trusted — browsers will accept certificates from this mesh"
-                        );
+                        info!("✓ Mesh CA cert stored — run `hush invite` on the CA machine to get a signed leaf cert");
                     }
                     Err(e) => {
                         info!("CA trust install failed: {e} — run `hush trust` manually");
@@ -264,13 +280,12 @@ async fn run_gossip_round(
 }
 
 /// Result of a successful peer dial — includes peer identity, their known
-/// peers, and optionally their CA material for mesh CA distribution.
+/// peers, and optionally the mesh CA cert (public only).
 struct DialResult {
     responder_id: String,
     responder_version: String,
     peers: Vec<PeerInfo>,
     ca_cert_pem: Option<String>,
-    ca_key_pem: Option<String>,
 }
 
 /// Open a temporary WebSocket to `url`, send `peer_hello`, read the `peer_list`
@@ -281,6 +296,8 @@ async fn dial_peer(
     my_peers: &[PeerInfo],
     peer_url: &str,
     my_ca: &(Option<String>, Option<String>),
+    leaf_cert_pem: Option<&[u8]>,
+    leaf_key_pem: Option<&[u8]>,
 ) -> Result<DialResult, String> {
     let mut hello = serde_json::json!({
         "type": "peer_hello",
@@ -289,13 +306,18 @@ async fn dial_peer(
         "peers": my_peers,
         "version": env!("CARGO_PKG_VERSION"),
     });
-    // Include our CA so the responding peer can adopt it if needed
-    if let (Some(cert), Some(key)) = my_ca {
+    // Include our CA cert (public only — never the private key) so new peers
+    // can store it for TLS verification purposes.
+    if let (Some(cert), _) = my_ca {
         hello["ca_cert_pem"] = serde_json::Value::String(cert.clone());
-        hello["ca_key_pem"] = serde_json::Value::String(key.clone());
     }
 
-    let connector = make_tls_connector();
+    let connector = match (leaf_cert_pem, leaf_key_pem) {
+        (Some(cert), Some(key)) => {
+            crate::tls::make_peer_tls_connector_with_identity(my_ca.0.as_deref(), cert, key)
+        }
+        _ => crate::tls::make_peer_tls_connector(my_ca.0.as_deref()),
+    };
     let connect_fut = connect_async_tls_with_config(peer_url, None, false, Some(connector));
     let (mut ws, _) = tokio::time::timeout(DIAL_TIMEOUT, connect_fut)
         .await
@@ -351,11 +373,6 @@ async fn dial_peer(
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    let ca_key_pem = value
-        .get("ca_key_pem")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
     let peers: Vec<PeerInfo> = value
         .get("peers")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -377,6 +394,5 @@ async fn dial_peer(
         responder_version,
         peers,
         ca_cert_pem,
-        ca_key_pem,
     })
 }

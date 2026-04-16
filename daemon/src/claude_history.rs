@@ -4,7 +4,7 @@
 //!   ~/.claude/projects/<slug>/<session_id>.jsonl
 //!
 //! The slug is derived from the cwd by replacing every '/' with '-', so:
-//!   /Users/admin/work/project → -Users-admin-work-project
+//!   /Users/you/work/project → -Users-you-work-project
 //!
 //! When a worktree moves to a different absolute path on a different machine,
 //! we must install the jsonl under the *new* slug so Claude Code's
@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 /// Return the slug Claude Code uses for a given working directory path.
-/// Example: /Users/admin/work/project → -Users-admin-work-project
+/// Example: /Users/you/work/project → -Users-you-work-project
 pub fn slug_for(working_dir: &Path) -> String {
     working_dir.to_string_lossy().replace('/', "-")
 }

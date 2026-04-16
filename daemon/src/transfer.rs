@@ -33,11 +33,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use futures_util::{SinkExt, StreamExt};
+use sha2::{Digest, Sha256};
 use tar::Builder as TarBuilder;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::Connector;
 use tracing::{info, warn};
 
 use crate::claude_history;
@@ -68,6 +68,7 @@ pub struct InboundTransfer {
     pub transfer_id: String,
     pub dest_path: PathBuf,
     pub project_name: String,
+    #[allow(dead_code)]
     pub project_path_hint: PathBuf,
     pub branch: String,
     pub permission_mode: String,
@@ -86,6 +87,8 @@ pub struct InboundTransfer {
     /// Open write handle for the history tar temp file.
     pub history_file: Option<std::fs::File>,
     pub history_path: PathBuf,
+    /// Base64-encoded ECDSA signature from TransferCommit (set when commit arrives).
+    pub signature: Option<String>,
 }
 
 impl InboundTransfer {
@@ -116,17 +119,6 @@ pub type InboundTransfers = Arc<Mutex<HashMap<String, InboundTransfer>>>;
 
 pub fn new_inbound_transfers() -> InboundTransfers {
     Arc::new(Mutex::new(HashMap::new()))
-}
-
-// ─── TLS connector ───────────────────────────────────────────────────────────
-
-fn make_tls_connector() -> Connector {
-    let tls = native_tls::TlsConnector::builder()
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
-        .build()
-        .expect("Failed to build TLS connector");
-    Connector::NativeTls(tls.into())
 }
 
 /// Generate a unique transfer ID.
@@ -214,9 +206,19 @@ pub async fn send_worktree(
         (0, false)
     };
 
-    // 3. Connect to destination (working_dir size is unknown until we stream it)
+    // 3. Connect to destination on /peer endpoint with mTLS client identity
     progress("dialing", 0, hist_size);
-    let connector = make_tls_connector();
+    let peer_url = crate::gossip::to_peer_url(&peer_url);
+    let ca_pems = crate::tls::read_ca_pems_from_state(&state_path);
+    let hush_dir = state_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let leaf_cert = std::fs::read(hush_dir.join("tls").join("cert.pem")).ok();
+    let leaf_key = std::fs::read(hush_dir.join("tls").join("key.pem")).ok();
+    let connector = match (leaf_cert.as_deref(), leaf_key.as_deref()) {
+        (Some(cert), Some(key)) => {
+            crate::tls::make_peer_tls_connector_with_identity(ca_pems.0.as_deref(), cert, key)
+        }
+        _ => crate::tls::make_peer_tls_connector(ca_pems.0.as_deref()),
+    };
     let connect_result = tokio::time::timeout(
         DIAL_TIMEOUT,
         connect_async_tls_with_config(&peer_url, None, false, Some(connector)),
@@ -278,10 +280,12 @@ pub async fn send_worktree(
     };
     info!("Transfer {transfer_id}: ack'd, dest_path={dest_path}");
 
-    // 6. Stream working_dir tar.gz directly into binary WS frames (no temp file)
+    // 6. Stream working_dir tar.gz directly into binary WS frames (no temp file).
+    // Hash bytes as they're sent for integrity verification in TransferCommit.
     progress("streaming", 0, 0);
     let mut bytes_sent = 0u64;
     let working_dir = worktree.working_dir.clone();
+    let mut hasher = Sha256::new();
     if let Err(e) = stream_working_dir_tar(
         &mut ws,
         &working_dir,
@@ -293,6 +297,7 @@ pub async fn send_worktree(
         &project_name,
         &worktree.branch,
         &dest_machine_id,
+        &mut hasher,
     )
     .await
     {
@@ -317,6 +322,10 @@ pub async fn send_worktree(
         {
             warn!("Transfer {transfer_id}: failed to send KindSwitch, continuing without history");
         } else {
+            // Hash the history tar before streaming so it's included in the signature
+            if let Ok(hist_bytes) = std::fs::read(&hist_path) {
+                hasher.update(&hist_bytes);
+            }
             let total_with_hist = bytes_sent + hist_size;
             if let Err(e) = send_file_as_binary(
                 &mut ws,
@@ -339,9 +348,27 @@ pub async fn send_worktree(
     }
     let _ = std::fs::remove_file(&hist_path);
 
-    // 8. Send TransferCommit
+    // 8. Sign the hash of all streamed bytes (working_dir + history) and send TransferCommit
+    let digest = hasher.finalize();
+    let (_, ca_key_opt) = crate::tls::read_ca_pems_from_state(&state_path);
+    let signature_b64 = ca_key_opt.as_deref().and_then(|key| {
+        match crate::tls::sign_with_ca(key, &digest) {
+            Ok(sig) => {
+                use base64::Engine;
+                Some(base64::engine::general_purpose::STANDARD.encode(&sig))
+            }
+            Err(e) => {
+                warn!("Transfer {transfer_id}: failed to sign — {e}");
+                None
+            }
+        }
+    });
+
     progress("awaiting_commit", bytes_sent, bytes_sent);
-    let commit = serde_json::json!({ "type": "transfer_commit", "transfer_id": &transfer_id });
+    let mut commit = serde_json::json!({ "type": "transfer_commit", "transfer_id": &transfer_id });
+    if let Some(ref sig) = signature_b64 {
+        commit["signature"] = serde_json::Value::String(sig.clone());
+    }
     if ws
         .send(Message::Text(commit.to_string().into()))
         .await
@@ -454,6 +481,7 @@ async fn stream_working_dir_tar(
     project_name: &str,
     branch: &str,
     dest_machine_id: &str,
+    hasher: &mut Sha256,
 ) -> Result<(), String> {
     // Channel capacity = 8 × 256 KB = 2 MB in-flight buffer
     let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
@@ -477,7 +505,9 @@ async fn stream_working_dir_tar(
     });
 
     // Drain chunks as they arrive and forward to the WebSocket.
+    // Hash each chunk as it's sent for integrity verification.
     while let Some(chunk) = chunk_rx.recv().await {
+        hasher.update(&chunk);
         *bytes_sent += chunk.len() as u64;
         ws.send(Message::Binary(chunk.into()))
             .await
@@ -791,6 +821,60 @@ pub async fn apply_transfer(
     // Close write handles so we can reopen for reading
     transfer.close_files();
 
+    // Verify transfer integrity: compute SHA-256(working_dir_tar || history_tar),
+    // verify against the CA signature from TransferCommit.
+    if let Some(sig_b64) = &transfer.signature {
+        use base64::Engine;
+        match base64::engine::general_purpose::STANDARD.decode(sig_b64) {
+            Ok(sig_bytes) => {
+                let (ca_cert_opt, _) = crate::tls::read_ca_pems_from_state(&state_path);
+                if let Some(ca_cert_pem) = ca_cert_opt {
+                    let mut hasher = sha2::Sha256::new();
+                    match std::fs::read(&transfer.working_dir_path) {
+                        Ok(wd_bytes) => hasher.update(&wd_bytes),
+                        Err(e) => {
+                            return Err(format!(
+                                "Cannot read working_dir tar for verification: {e}"
+                            ));
+                        }
+                    }
+                    if transfer.has_history {
+                        if let Ok(hist_bytes) = std::fs::read(&transfer.history_path) {
+                            hasher.update(&hist_bytes);
+                        }
+                    }
+                    let digest = hasher.finalize();
+                    match crate::tls::verify_ca_signature(&ca_cert_pem, &digest, &sig_bytes) {
+                        Ok(true) => {
+                            info!("Transfer {}: signature verified", transfer.transfer_id);
+                        }
+                        Ok(false) => {
+                            let _ = std::fs::remove_file(&transfer.working_dir_path);
+                            let _ = std::fs::remove_file(&transfer.history_path);
+                            return Err("Transfer signature verification FAILED".to_string());
+                        }
+                        Err(e) => {
+                            let _ = std::fs::remove_file(&transfer.working_dir_path);
+                            let _ = std::fs::remove_file(&transfer.history_path);
+                            return Err(format!("Transfer signature verify error: {e}"));
+                        }
+                    }
+                }
+                // If no CA cert available, skip verification (best-effort)
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&transfer.working_dir_path);
+                let _ = std::fs::remove_file(&transfer.history_path);
+                return Err(format!("Invalid transfer signature encoding: {e}"));
+            }
+        }
+    } else {
+        warn!(
+            "Transfer {}: no signature provided — accepting unsigned transfer",
+            transfer.transfer_id
+        );
+    }
+
     let machine_id = state.read().await.machine_id.clone();
 
     // Spawn a heartbeat task to keep the source's idle watchdog alive
@@ -802,7 +886,7 @@ pub async fn apply_transfer(
         let hb_total = transfer.total_bytes;
         let hb_branch = transfer.branch.clone();
         let hb_project = transfer.project_name.clone();
-        let hb_from = transfer.from_machine_id.clone();
+        let _hb_from = transfer.from_machine_id.clone();
         tokio::spawn(async move {
             let mut stop = hb_stop_rx;
             loop {
