@@ -85,23 +85,40 @@ export function useDaemonConnections() {
       async function connect(url: string, daemonId: string) {
         if (entry.unmounted) return;
 
-        // Fetch auth token from the daemon's /config endpoint
+        // Fetch auth token — try /config/local first (works for loopback
+        // connections and returns the token), fall back to /config for remote.
         let wsUrl = url;
         try {
-          const configUrl = url
-            .replace(/\/ws$/, "/config")
+          const baseHttpUrl = url
+            .replace(/\/ws$/, "")
             .replace(/^wss:/, "https:")
             .replace(/^ws:/, "http:");
-          const res = await fetch(configUrl);
-          if (res.ok) {
-            const config = await res.json();
+          // Try /config/local first; daemon returns token only for loopback callers
+          let config: Record<string, unknown> | null = null;
+          const localRes = await fetch(`${baseHttpUrl}/config/local`).catch(() => null);
+          if (localRes?.ok) {
+            config = await localRes.json();
+          } else {
+            const res = await fetch(`${baseHttpUrl}/config`).catch(() => null);
+            if (res?.ok) config = await res.json();
+          }
+          if (config) {
+            // Deduplicate: if another daemon with this machine_id is already
+            // registered at a different URL, drop this stale entry.
+            if (config.machine_id && config.machine_id !== daemonId) {
+              const existing = useStore.getState().daemons[config.machine_id as string];
+              if (existing && existing.url !== url) {
+                useStore.getState().removeDaemon(daemonId);
+                return;
+              }
+            }
             if (config.token) {
               const sep = url.includes("?") ? "&" : "?";
               wsUrl = `${url}${sep}token=${config.token}`;
             }
           }
         } catch {
-          // Fall through — daemon may not support /config yet
+          // Fall through — connect without token
         }
 
         if (entry.unmounted) return;

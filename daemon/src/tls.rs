@@ -283,36 +283,195 @@ fn make_peer_tls_connector_inner(
     leaf_cert_pem: Option<&[u8]>,
     leaf_key_pem: Option<&[u8]>,
 ) -> tokio_tungstenite::Connector {
-    let mut builder = native_tls::TlsConnector::builder();
-    if let Some(pem) = ca_cert_pem {
-        if let Ok(cert) = native_tls::Certificate::from_pem(pem.as_bytes()) {
-            builder.add_root_certificate(cert);
-            // Certs use IP SANs; the peer may be reached via a different IP
-            builder.danger_accept_invalid_hostnames(true);
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    use std::sync::Arc;
+
+    // Build the server cert verifier. When a CA cert is available, verify the
+    // peer's chain against it (hostname skipped — certs use IP SANs).
+    // Pre-join / first-boot: accept anything.
+    let verifier: Arc<dyn rustls::client::danger::ServerCertVerifier> =
+        if let Some(pem) = ca_cert_pem {
+            match pem_to_der(pem) {
+                Ok(der) => {
+                    let mut store = rustls::RootCertStore::empty();
+                    if store.add(CertificateDer::from(der).into_owned()).is_ok() {
+                        Arc::new(CaOnlyVerifier {
+                            roots: Arc::new(store),
+                        })
+                    } else {
+                        tracing::warn!(
+                            "Failed to add CA cert to root store — falling back to unverified TLS"
+                        );
+                        Arc::new(AcceptAnyCert)
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!("Invalid CA cert PEM — falling back to unverified TLS");
+                    Arc::new(AcceptAnyCert)
+                }
+            }
         } else {
-            tracing::warn!("Invalid CA cert PEM — falling back to unverified TLS");
-            builder.danger_accept_invalid_certs(true);
-            builder.danger_accept_invalid_hostnames(true);
+            Arc::new(AcceptAnyCert)
+        };
+
+    // Try to parse a client cert+key for mTLS.
+    let client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> =
+        if let (Some(cert_pem), Some(key_pem)) = (leaf_cert_pem, leaf_key_pem) {
+            let certs: Result<Vec<CertificateDer<'static>>, _> = {
+                let mut c = std::io::Cursor::new(cert_pem);
+                rustls_pemfile::certs(&mut c).collect()
+            };
+            let key: Result<Option<PrivateKeyDer<'static>>, _> = {
+                let mut c = std::io::Cursor::new(key_pem);
+                rustls_pemfile::private_key(&mut c)
+            };
+            match (certs, key) {
+                (Ok(certs), Ok(Some(key))) => Some((certs, key)),
+                _ => {
+                    tracing::warn!("Failed to parse leaf cert/key PEM for mTLS identity");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+    let config = if let Some((certs, key)) = client_identity {
+        match rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_client_auth_cert(certs, key)
+        {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                tracing::warn!("Failed to build mTLS client config: {e}");
+                rustls::ClientConfig::builder()
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
+                    .with_no_client_auth()
+            }
         }
     } else {
-        // First boot — CA not yet available
-        builder.danger_accept_invalid_certs(true);
-        builder.danger_accept_invalid_hostnames(true);
+        rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth()
+    };
+
+    tokio_tungstenite::Connector::Rustls(Arc::new(config))
+}
+
+// ── Custom certificate verifiers ─────────────────────────────────────────────
+
+/// Accepts any server certificate — used before the mesh CA is known.
+#[derive(Debug)]
+struct AcceptAnyCert;
+
+impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer,
+        _intermediates: &[rustls::pki_types::CertificateDer],
+        _server_name: &rustls::pki_types::ServerName,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
-    // Optionally present client identity for mTLS
-    if let (Some(cert), Some(key)) = (leaf_cert_pem, leaf_key_pem) {
-        match native_tls::Identity::from_pkcs8(cert, key) {
-            Ok(identity) => {
-                builder.identity(identity);
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load leaf cert identity for mTLS: {e}");
-            }
-        }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
     }
-    tokio_tungstenite::Connector::NativeTls(
-        builder.build().expect("Failed to build TLS connector").into(),
-    )
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Verifies against the mesh CA cert but skips hostname checking
+/// (peer certs use IP SANs that may differ across machines).
+#[derive(Debug)]
+struct CaOnlyVerifier {
+    roots: Arc<rustls::RootCertStore>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for CaOnlyVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer,
+        intermediates: &[rustls::pki_types::CertificateDer],
+        _server_name: &rustls::pki_types::ServerName,
+        ocsp: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        // Verify chain against CA; pass a stable dummy name since we don't do hostname checks.
+        let verifier = rustls::client::WebPkiServerVerifier::builder(self.roots.clone())
+            .build()
+            .map_err(|e| rustls::Error::General(e.to_string()))?;
+        let dummy = rustls::pki_types::ServerName::try_from("localhost")
+            .map_err(|e| rustls::Error::General(e.to_string()))?;
+        verifier.verify_server_cert(end_entity, intermediates, &dummy, ocsp, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
 }
 
 /// Build a `rustls::ServerConfig` that optionally verifies client certificates

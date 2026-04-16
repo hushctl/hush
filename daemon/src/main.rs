@@ -387,6 +387,10 @@ async fn main() {
         .route("/join", post(join::join_handler))
         .with_state(join_state);
 
+    // Allow any origin — the daemon serves a local-only trusted interface and
+    // the dev server (localhost:5173) needs to reach it cross-origin.
+    let cors = tower_http::cors::CorsLayer::permissive();
+
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .route("/peer", get(peer_ws_handler))
@@ -394,7 +398,8 @@ async fn main() {
         .route("/config", get(config_handler))
         .route("/config/local", get(config_local_handler))
         .with_state(app_state)
-        .merge(join_router);
+        .merge(join_router)
+        .layer(cors);
 
     // Serve the built UI as a fallback — if a UI dir is found, any request
     // that isn't /ws or /health gets the SPA (with index.html fallback for
