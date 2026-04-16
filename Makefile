@@ -33,13 +33,19 @@ install: build
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 
-test: test-daemon test-ui
+test: test-daemon test-ui test-acceptance
 
 test-daemon:
 	cd daemon && cargo test
 
 test-ui:
 	cd ui && npm test
+
+test-acceptance:
+	@echo "Building daemon (debug)..."
+	cd daemon && cargo build 2>&1 | tail -3
+	@echo "Running acceptance tests..."
+	cd tests && node run_tests.mjs
 
 # ── Clean ────────────────────────────────────────────────────────────────────
 

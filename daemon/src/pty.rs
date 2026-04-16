@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info, warn};
 
@@ -34,12 +34,20 @@ pub struct PtySession {
     master: Box<dyn MasterPty + Send>,
     /// In-memory scrollback for late-arriving / reattaching clients.
     scrollback: Vec<u8>,
+    /// Child process handle — used to send kill signals.
+    child: Box<dyn Child + Send + Sync>,
 }
 
 impl PtySession {
     pub fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
         self.writer.write_all(data)?;
         self.writer.flush()
+    }
+
+    /// Send SIGKILL to the child process. The monitoring task will detect the
+    /// resulting EOF and send `ShellExit` / `PtyExit` on the broadcast channel.
+    pub fn kill_child(&mut self) {
+        let _ = self.child.kill();
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), String> {
@@ -143,12 +151,18 @@ impl PtyManager {
 
     /// Kill and remove a worktree's pty (if any).
     pub async fn kill(&self, worktree_id: &str) {
-        let mut sessions = self.sessions.lock().await;
-        if sessions.remove(worktree_id).is_some() {
+        let session = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.remove(worktree_id)
+        };
+        if let Some(s) = session {
+            // Kill the child process so the monitoring task's reader gets EOF,
+            // sends ShellExit/PtyExit on the broadcast, and cleans up.
+            if let Ok(mut locked) = s.try_lock() {
+                locked.kill_child();
+            }
             info!("killed pty for {worktree_id}");
         }
-        // Dropping the PtySession drops the master, which closes the slave
-        // and causes the child process to receive SIGHUP.
     }
 
     /// Spawn a plain shell (bash/zsh/$SHELL) pty for a worktree.
@@ -196,7 +210,7 @@ impl PtyManager {
             cmd.env(key, value);
         }
 
-        let _child = pair
+        let child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("spawn shell failed: {e}"))?;
@@ -215,6 +229,7 @@ impl PtyManager {
             writer,
             master: pair.master,
             scrollback: Vec::new(),
+            child,
         }));
 
         {
@@ -367,7 +382,7 @@ impl PtyManager {
             self.hook_socket.to_string_lossy().to_string(),
         );
 
-        let _child = pair
+        let child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("spawn claude failed: {e}"))?;
@@ -388,6 +403,7 @@ impl PtyManager {
             writer,
             master: pair.master,
             scrollback: Vec::new(),
+            child,
         }));
 
         {
