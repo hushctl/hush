@@ -98,16 +98,19 @@ export function useDaemonConnections() {
             .replace(/^ws:/, "http:");
 
           let token: string | null = null;
-
-          // Try /config/local (loopback-only endpoint, returns token + machine_id)
           let machineId: string | null = null;
-          const localRes = await fetch(`${baseHttpUrl}/config/local`).catch(() => null);
-          if (localRes?.ok) {
-            const cfg = await localRes.json();
-            token = cfg.token ?? null;
-            machineId = cfg.machine_id ?? null;
+
+          const isLocal = baseHttpUrl.includes("localhost") || baseHttpUrl.includes("127.0.0.1");
+          if (isLocal) {
+            // Local daemon — /config/local returns token + machine_id for loopback callers
+            const localRes = await fetch(`${baseHttpUrl}/config/local`).catch(() => null);
+            if (localRes?.ok) {
+              const cfg = await localRes.json();
+              token = cfg.token ?? null;
+              machineId = cfg.machine_id ?? null;
+            }
           } else {
-            // Remote daemon — get machine_id from /config, token from local /config/peers
+            // Remote daemon — get machine_id from /config, token via local daemon's /config/peers
             const cfgRes = await fetch(`${baseHttpUrl}/config`).catch(() => null);
             if (cfgRes?.ok) {
               const cfg = await cfgRes.json();
