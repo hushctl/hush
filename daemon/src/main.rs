@@ -429,7 +429,9 @@ async fn main() {
         .expect("Failed to load/generate TLS certificate");
 
     // Auto-trust CA on first boot so browsers just work.
-    if !trust::is_trusted(tls_hush_dir) {
+    // Skipped when HUSH_SKIP_CA_TRUST=1 (used in CI where keychain prompts block).
+    let skip_trust = std::env::var("HUSH_SKIP_CA_TRUST").as_deref() == Ok("1");
+    if !skip_trust && !trust::is_trusted(tls_hush_dir) {
         let ca_cert_path = tls_hush_dir.join("tls").join("ca.crt");
         if ca_cert_path.exists() {
             info!("First run — installing CA into OS trust store (may prompt for password)...");
