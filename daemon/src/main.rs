@@ -513,6 +513,10 @@ async fn main() {
         .expect("Server error");
 
     info!("Daemon shut down");
+
+    // Force-exit so blocking background threads (mDNS browse loop) don't
+    // keep the process alive after the server has stopped.
+    std::process::exit(0);
 }
 
 /// Find the built UI directory. Checks (in order):
