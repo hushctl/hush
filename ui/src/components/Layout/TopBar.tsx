@@ -19,6 +19,7 @@ export function TopBar() {
   const autoTidy = useStore((s) => s.canvas.autoTidy);
   const setAutoTidy = useStore((s) => s.setAutoTidy);
   const switchToGrid = useStore((s) => s.switchToGrid);
+  const setTileMode = useStore((s) => s.setTileMode);
 
   function handleTidy() {
     const canvasEl = document.querySelector("[data-canvas-area]");
@@ -55,6 +56,26 @@ export function TopBar() {
 
       {panels.length > 0 && (
         <>
+          <Button
+            data-testid="tile-1"
+            variant="ghost"
+            size="sm"
+            className="rounded-none shadow-none font-normal h-7 text-xs px-2"
+            onClick={() => setTileMode("1-up")}
+            title="Single panel"
+          >
+            1
+          </Button>
+          <Button
+            data-testid="tile-2"
+            variant="ghost"
+            size="sm"
+            className="rounded-none shadow-none font-normal h-7 text-xs px-2"
+            onClick={() => setTileMode("2-up")}
+            title="Two panels side by side"
+          >
+            2
+          </Button>
           <Button
             variant="ghost"
             size="sm"

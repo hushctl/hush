@@ -203,6 +203,14 @@ pub enum ClientMessage {
     UpgradeCommit {
         upgrade_id: String,
     },
+
+    /// Queue a prompt for a worktree. If the worktree is idle the prompt is
+    /// dispatched immediately; if it is running/needs_you/failed it is appended
+    /// to `queued_tasks` and auto-dispatched when the session next becomes idle.
+    QueueTask {
+        worktree_id: String,
+        prompt: String,
+    },
 }
 
 fn default_permission_mode() -> String {
@@ -371,6 +379,13 @@ pub enum ServerMessage {
         transfer_id: String,
         new_worktree_id: String,
     },
+    /// Sent when the queued_tasks list for a worktree changes.
+    QueueUpdate {
+        machine_id: String,
+        worktree_id: String,
+        queued_tasks: Vec<String>,
+    },
+
     /// Transfer failed (either side).
     TransferError {
         machine_id: String,
@@ -416,6 +431,9 @@ pub struct WorktreeInfo {
     /// Whether a shell pty is currently alive for this worktree.
     #[serde(default)]
     pub shell_alive: bool,
+    /// Prompts queued for sequential dispatch when the worktree becomes idle.
+    #[serde(default)]
+    pub queued_tasks: Vec<String>,
 }
 
 #[cfg(test)]

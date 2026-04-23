@@ -63,6 +63,10 @@ pub struct Worktree {
     /// Set when this worktree was transferred from another machine.
     #[serde(default)]
     pub origin_machine_id: Option<String>,
+    /// Prompts waiting to be dispatched. When the worktree transitions to idle
+    /// and this is non-empty, the daemon auto-dispatches the first entry.
+    #[serde(default)]
+    pub queued_tasks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -246,6 +250,7 @@ impl DaemonState {
             last_task: None,
             session_id: None,
             origin_machine_id: None,
+            queued_tasks: Vec::new(),
         };
 
         let info = WorktreeInfo {
@@ -258,6 +263,7 @@ impl DaemonState {
             session_id: None,
             machine_id: self.machine_id.clone(),
             shell_alive: false,
+            queued_tasks: Vec::new(),
         };
 
         project.worktrees.push(worktree);
@@ -294,6 +300,7 @@ impl DaemonState {
             last_task: last_task.clone(),
             session_id: session_id.clone(),
             origin_machine_id: Some(origin_machine_id.clone()),
+            queued_tasks: Vec::new(),
         };
 
         let info = WorktreeInfo {
@@ -306,6 +313,7 @@ impl DaemonState {
             session_id,
             machine_id: self.machine_id.clone(),
             shell_alive: false,
+            queued_tasks: Vec::new(),
         };
 
         project.worktrees.push(worktree);
@@ -386,6 +394,7 @@ impl DaemonState {
                     session_id: w.session_id.clone(),
                     machine_id: self.machine_id.clone(),
                     shell_alive: false, // populated by caller with pty_manager.exists()
+                    queued_tasks: w.queued_tasks.clone(),
                 })
             })
             .collect()

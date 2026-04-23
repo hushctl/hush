@@ -49,12 +49,12 @@ export function DotGrid() {
   const projects = useStore((s) => s.projects);
   const lastLines = useStore((s) => s.lastLines);
   const shellAlive = useStore((s) => s.shellAlive);
+  const lastActivityTs = useStore((s) => s.lastActivityTs);
 
-  // No per-message activity tracking now that conversation lives in the
-  // pty (we don't track terminal bytes as "events"). For v1, treat all
-  // worktrees as having the same recency. Status changes from hooks will
-  // become the activity signal in a follow-up.
-  const lastActivities = new Map<string, number>();
+  // Activity map for Y-axis recency positioning: worktrees that recently had a
+  // status_change appear higher on the grid. Falls back to 0 (bottom) for
+  // worktrees that have never changed status in this session.
+  const lastActivities = new Map<string, number>(Object.entries(lastActivityTs));
 
   useEffect(() => {
     const ro = new ResizeObserver((entries) => {

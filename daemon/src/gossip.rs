@@ -421,3 +421,120 @@ async fn dial_peer(
         auth_token,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── to_peer_url ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn to_peer_url_converts_ws_path() {
+        assert_eq!(
+            to_peer_url("wss://host:9111/ws"),
+            "wss://host:9111/peer"
+        );
+    }
+
+    #[test]
+    fn to_peer_url_already_peer_unchanged() {
+        assert_eq!(
+            to_peer_url("wss://host:9111/peer"),
+            "wss://host:9111/peer"
+        );
+    }
+
+    #[test]
+    fn to_peer_url_no_ws_suffix_returned_unchanged() {
+        // When the URL doesn't end with /ws, to_peer_url returns it as-is
+        // (could already be /peer or another shape).
+        assert_eq!(
+            to_peer_url("wss://host:9111"),
+            "wss://host:9111"
+        );
+    }
+
+    #[test]
+    fn to_peer_url_handles_tailscale_host() {
+        assert_eq!(
+            to_peer_url("wss://laptop.tail12345.ts.net:9111/ws"),
+            "wss://laptop.tail12345.ts.net:9111/peer"
+        );
+    }
+
+    // ── parse_version ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_version_standard_semver() {
+        assert_eq!(parse_version("1.2.3"), (1, 2, 3));
+    }
+
+    #[test]
+    fn parse_version_real_hush_version() {
+        assert_eq!(parse_version("0.13.2"), (0, 13, 2));
+    }
+
+    #[test]
+    fn parse_version_empty_string_returns_zeros() {
+        assert_eq!(parse_version(""), (0, 0, 0));
+    }
+
+    #[test]
+    fn parse_version_non_numeric_returns_zeros() {
+        assert_eq!(parse_version("bad"), (0, 0, 0));
+    }
+
+    #[test]
+    fn parse_version_partial_semver() {
+        assert_eq!(parse_version("1.2"), (1, 2, 0));
+    }
+
+    #[test]
+    fn parse_version_ordering_works() {
+        assert!(parse_version("0.14.0") > parse_version("0.13.9"));
+        assert!(parse_version("1.0.0") > parse_version("0.99.99"));
+    }
+
+    // ── stale peer pruning (via DaemonState) ──────────────────────────────────
+
+    #[test]
+    fn prune_stale_removes_old_peers_and_keeps_fresh() {
+        use crate::state::{DaemonState, PeerInfo};
+
+        let mut ds = DaemonState::default();
+        ds.machine_id = "self".to_string();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Fresh peer (seen 60 seconds ago)
+        ds.merge_peer(PeerInfo {
+            machine_id: "fresh".to_string(),
+            url: "wss://fresh:9111/ws".to_string(),
+            last_seen: now - 60,
+            version: "0.13.2".to_string(),
+        });
+        // Stale peer (seen more than 24h ago)
+        ds.merge_peer(PeerInfo {
+            machine_id: "stale".to_string(),
+            url: "wss://stale:9111/ws".to_string(),
+            last_seen: now - STALE_AFTER_SECS - 1,
+            version: "0.12.0".to_string(),
+        });
+        // Bootstrap peer (last_seen == 0 — never contacted, must not be pruned)
+        ds.merge_peer(PeerInfo {
+            machine_id: "wss://bootstrap:9111/ws".to_string(),
+            url: "wss://bootstrap:9111/ws".to_string(),
+            last_seen: 0,
+            version: String::new(),
+        });
+
+        ds.prune_stale(STALE_AFTER_SECS);
+
+        let ids: Vec<_> = ds.peers.iter().map(|p| p.machine_id.as_str()).collect();
+        assert!(ids.contains(&"fresh"), "fresh peer should survive pruning");
+        assert!(!ids.contains(&"stale"), "stale peer should be pruned");
+        assert!(ids.contains(&"wss://bootstrap:9111/ws"), "bootstrap peer (last_seen=0) should survive");
+    }
+}

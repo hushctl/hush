@@ -24,6 +24,7 @@
  *  17. Error: unknown message type — connection stays open
  *  18. Concurrent WebSocket connections — both receive responses
  *  19. remove_worktree → worktree gone from list
+ *  20. /peer endpoint rejects connections without a client certificate (mTLS)
  */
 
 import WebSocket from 'ws';
@@ -536,6 +537,42 @@ try {
     worktreeId = null; // prevent cleanup from trying to delete again
   } catch (e) {
     fail('remove_worktree', e.message);
+  }
+
+  // ── Test 20: /peer endpoint requires mTLS client cert ─────────────────────
+  console.log('\nTest 20: /peer endpoint rejects connections without a client certificate');
+  try {
+    const peerUrl = `wss://localhost:${PORT}/peer`;
+    await new Promise((resolve, reject) => {
+      const peerWs = new WebSocket(peerUrl, { rejectUnauthorized: false });
+      // Should get a non-101 response (403 Forbidden) — the 'ws' library fires
+      // an 'unexpected server response' error when the upgrade is rejected.
+      peerWs.on('unexpected-response', (_req, res) => {
+        if (res.statusCode === 403) {
+          pass('/peer without client cert → 403 Forbidden');
+          resolve();
+        } else {
+          reject(new Error(`Expected 403, got ${res.statusCode}`));
+        }
+        peerWs.terminate();
+      });
+      peerWs.on('open', () => {
+        peerWs.close();
+        reject(new Error('/peer accepted connection without a client certificate'));
+      });
+      peerWs.on('error', (err) => {
+        // Some WS implementations surface this as a plain error
+        if (err.message && err.message.includes('403')) {
+          pass('/peer without client cert → 403 Forbidden');
+          resolve();
+        } else {
+          reject(err);
+        }
+      });
+      setTimeout(() => reject(new Error('timeout waiting for /peer response')), 5000);
+    });
+  } catch (e) {
+    fail('/peer mTLS enforcement', e.message);
   }
 
 } finally {

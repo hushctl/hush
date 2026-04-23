@@ -2,6 +2,7 @@ mod claude_history;
 mod git_watcher;
 mod gossip;
 mod hooks;
+mod mdns;
 mod join;
 mod memory_monitor;
 mod peer_upgrade;
@@ -27,6 +28,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
+use crate::tls::PeerCertPresent;
 use clap::Parser;
 use tokio::sync::{broadcast, RwLock};
 use tracing::info;
@@ -115,6 +117,10 @@ struct Args {
     /// ~/.hush/tls/, and then start normally.
     #[arg(long)]
     join_token: Option<String>,
+
+    /// Disable mDNS peer discovery on LAN.
+    #[arg(long, default_value_t = false)]
+    no_mdns: bool,
 }
 
 /// State for the /join endpoint (subset of full AppState).
@@ -350,6 +356,7 @@ async fn main() {
         Arc::clone(&daemon_state),
         state_path.clone(),
         tx.clone(),
+        pty_manager.clone(),
     );
 
     // Gossip task — runs every 30s, dials known peers
@@ -359,6 +366,18 @@ async fn main() {
         tx.clone(),
         args.auto_upgrade,
     );
+
+    // mDNS peer discovery — advertise on LAN and browse for peers.
+    let _mdns_handle = if !args.no_mdns {
+        Some(mdns::spawn_mdns(
+            Arc::clone(&daemon_state),
+            machine_id.clone(),
+            args.advertise_url.clone(),
+            args.port,
+        ))
+    } else {
+        None
+    };
 
     // Memory pressure monitor — polls system memory every 15s, alerts on transitions
     memory_monitor::spawn(machine_id.clone(), tx.clone());
@@ -482,7 +501,12 @@ async fn main() {
         shutdown_handle.graceful_shutdown(None);
     });
 
-    axum_server::bind_rustls(addr.parse().expect("Invalid bind address"), rustls_config)
+    // Use a custom acceptor that injects PeerCertPresent into every request's
+    // extensions after the TLS handshake. The /peer handler uses this to enforce
+    // that daemon peers presented a valid CA-signed TLS client certificate.
+    let acceptor = tls::MtlsAcceptor::new(rustls_config);
+    axum_server::Server::bind(addr.parse().expect("Invalid bind address"))
+        .acceptor(acceptor)
         .handle(handle)
         .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await
@@ -631,16 +655,24 @@ async fn ws_handler(
     .into_response()
 }
 
-/// Daemon-to-daemon WebSocket endpoint. Auth is via mTLS at the TLS layer —
-/// the ServerConfig verifies client certs against the mesh CA when presented.
-/// Peers that present a valid CA-signed leaf cert are authenticated; peers
-/// without a cert are currently allowed through (enforced via join flow in Phase 5).
-/// Browsers should use /ws with token auth instead.
+/// Daemon-to-daemon WebSocket endpoint. Requires a valid CA-signed TLS client
+/// certificate — enforced via the [`tls::MtlsAcceptor`] which injects
+/// [`PeerCertPresent`] into every request after the TLS handshake. Connections
+/// without a client cert (e.g. browsers, unauthenticated scanners) are rejected
+/// with 403 Forbidden before the WebSocket upgrade occurs.
 async fn peer_ws_handler(
     ws: WebSocketUpgrade,
+    axum::extract::Extension(peer_cert): axum::extract::Extension<PeerCertPresent>,
     AxumState(app_state): AxumState<AppState>,
 ) -> axum::response::Response {
-    info!("New peer WebSocket connection");
+    if !peer_cert.0 {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "Peer mTLS certificate required. Use `hush invite` + `hush --join-token` to enroll this machine.",
+        )
+            .into_response();
+    }
+    info!("New peer WebSocket connection (mTLS authenticated)");
     ws.on_upgrade(move |socket| {
         ws::handle_socket(
             socket,

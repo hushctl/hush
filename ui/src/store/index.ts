@@ -59,6 +59,7 @@ export const useStore = create<AppState>()(
       worktrees: {},
       lastLines: {},
       shellAlive: {},
+      lastActivityTs: {},
 
       // ── UI state ───────────────────────────────────────────────────────────
       layoutMode: "grid",
@@ -247,6 +248,10 @@ export const useStore = create<AppState>()(
                     status: msg.status as WorktreeInfo["status"],
                   },
                 },
+                lastActivityTs: {
+                  ...state.lastActivityTs,
+                  [nsId]: Date.now(),
+                },
               };
             });
             break;
@@ -255,6 +260,21 @@ export const useStore = create<AppState>()(
           case "session_ended":
             // status already updated via status_change
             break;
+
+          case "queue_update": {
+            const nsId = nsKey(mid, msg.worktree_id);
+            set((state) => {
+              const wt = state.worktrees[nsId];
+              if (!wt) return {};
+              return {
+                worktrees: {
+                  ...state.worktrees,
+                  [nsId]: { ...wt, queued_tasks: msg.queued_tasks },
+                },
+              };
+            });
+            break;
+          }
 
           case "pty_data": {
             const nsId = nsKey(mid, msg.worktree_id);
@@ -750,6 +770,14 @@ export const useStore = create<AppState>()(
       openProjectTree: (projectId) => {
         set({ selectedProjectId: projectId });
         get().openPanel({ kind: "worktree_list", targetId: projectId });
+        // Auto-open terminal for the first worktree in the project so the
+        // right-panel terminal is visible immediately.
+        const firstWt = Object.values(get().worktrees).find(
+          (w) => w.project_id === projectId,
+        );
+        if (firstWt) {
+          get().openPanel({ kind: "terminal", targetId: firstWt.id });
+        }
       },
 
       openFileContent: (worktreeId, path, content, truncated) =>

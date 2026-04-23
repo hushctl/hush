@@ -30,7 +30,21 @@ pub fn load_or_generate_ca(hush_dir: &Path) -> io::Result<CaBundle> {
 
     if ca_cert_path.exists() && ca_key_path.exists() {
         let cert_pem = std::fs::read_to_string(&ca_cert_path)?;
-        let key_pem = std::fs::read_to_string(&ca_key_path)?;
+
+        let ca_key_data = std::fs::read(&ca_key_path)?;
+        let key_pem = if is_encrypted_key(&ca_key_data) {
+            let passphrase = get_passphrase("Enter CA key passphrase", false)?;
+            decrypt_key_pem(&ca_key_data, &passphrase)?
+        } else {
+            // Legacy plaintext PEM — migrate to encrypted format on first load.
+            let pem = String::from_utf8(ca_key_data)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            eprintln!("Migrating CA key to encrypted format...");
+            let passphrase = get_passphrase("Create passphrase for CA key", true)?;
+            let encrypted = encrypt_key_pem(&pem, &passphrase)?;
+            std::fs::write(&ca_key_path, &encrypted)?;
+            pem
+        };
 
         let params = CertificateParams::from_ca_cert_pem(&cert_pem)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -71,8 +85,11 @@ fn generate_ca(
         .self_signed(&key_pair)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
+    let passphrase = get_passphrase("Create passphrase for CA key", true)?;
+    let encrypted_key = encrypt_key_pem(&key_pair.serialize_pem(), &passphrase)?;
+
     std::fs::write(&ca_cert_path, cert.pem())?;
-    std::fs::write(&ca_key_path, key_pair.serialize_pem())?;
+    std::fs::write(&ca_key_path, &encrypted_key)?;
 
     #[cfg(unix)]
     {
@@ -248,14 +265,23 @@ fn try_load(cert_path: &Path, key_path: &Path) -> io::Result<TlsMaterial> {
 pub fn read_ca_pems_from_state(state_path: &Path) -> (Option<String>, Option<String>) {
     let hush_dir = state_path.parent().unwrap_or_else(|| Path::new("."));
     let ca_crt = hush_dir.join("tls").join("ca.crt");
-    let ca_key = hush_dir.join("tls").join("ca.key");
-    match (
-        std::fs::read_to_string(&ca_crt),
-        std::fs::read_to_string(&ca_key),
-    ) {
-        (Ok(cert), Ok(key)) => (Some(cert), Some(key)),
-        _ => (None, None),
-    }
+    let ca_key_path = hush_dir.join("tls").join("ca.key");
+
+    let cert_pem = std::fs::read_to_string(&ca_crt).ok();
+    let key_pem = std::fs::read(&ca_key_path).ok().and_then(|data| {
+        if is_encrypted_key(&data) {
+            // Cannot prompt interactively from async gossip/transfer context —
+            // use env var only. Callers handle None key gracefully (skip signing).
+            std::env::var("HUSH_CA_PASSPHRASE").ok().and_then(|pass| {
+                decrypt_key_pem(&data, &pass).ok()
+            })
+        } else {
+            // Legacy plaintext — return as-is.
+            String::from_utf8(data).ok()
+        }
+    });
+
+    (cert_pem, key_pem)
 }
 
 
@@ -583,12 +609,279 @@ pub fn verify_ca_signature(
     }
 }
 
+// ── CA key encryption helpers ────────────────────────────────────────────────
+
+fn is_encrypted_key(data: &[u8]) -> bool {
+    data.starts_with(b"HKEK")
+}
+
+/// Derive a 32-byte AES-256-GCM key from `passphrase` + `salt` via PBKDF2-HMAC-SHA256.
+fn derive_key(passphrase: &[u8], salt: &[u8]) -> [u8; 32] {
+    use ring::pbkdf2;
+    use std::num::NonZeroU32;
+    let mut key = [0u8; 32];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        NonZeroU32::new(100_000).unwrap(),
+        salt,
+        passphrase,
+        &mut key,
+    );
+    key
+}
+
+/// Encrypt a PEM string under `passphrase`. Returns a binary envelope:
+/// `[4B "HKEK"][1B version 0x01][2B salt_len BE][salt][12B nonce][AES-256-GCM ciphertext+tag]`
+fn encrypt_key_pem(pem: &str, passphrase: &str) -> io::Result<Vec<u8>> {
+    use ring::aead;
+    use ring::rand::{self, SecureRandom};
+    let rng = rand::SystemRandom::new();
+    let mut salt = [0u8; 32];
+    rng.fill(&mut salt)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "rng failed"))?;
+    let mut nonce_bytes = [0u8; 12];
+    rng.fill(&mut nonce_bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "rng failed"))?;
+
+    let key_bytes = derive_key(passphrase.as_bytes(), &salt);
+    let unbound = aead::UnboundKey::new(&aead::AES_256_GCM, &key_bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "key construction failed"))?;
+    let lsk = aead::LessSafeKey::new(unbound);
+    let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+
+    let mut ciphertext = pem.as_bytes().to_vec();
+    lsk.seal_in_place_append_tag(nonce, aead::Aad::empty(), &mut ciphertext)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "encryption failed"))?;
+
+    let salt_len = (salt.len() as u16).to_be_bytes();
+    let mut out = Vec::with_capacity(4 + 1 + 2 + salt.len() + 12 + ciphertext.len());
+    out.extend_from_slice(b"HKEK");
+    out.push(0x01);
+    out.extend_from_slice(&salt_len);
+    out.extend_from_slice(&salt);
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Decrypt a binary envelope produced by [`encrypt_key_pem`].
+fn decrypt_key_pem(blob: &[u8], passphrase: &str) -> io::Result<String> {
+    use ring::aead;
+    if blob.len() < 7 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "blob too short"));
+    }
+    if &blob[0..4] != b"HKEK" {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad magic"));
+    }
+    // blob[4] = version (ignored for forward compat)
+    let salt_len = u16::from_be_bytes([blob[5], blob[6]]) as usize;
+    let salt_start = 7;
+    let salt_end = salt_start + salt_len;
+    let nonce_end = salt_end + 12;
+    if blob.len() < nonce_end {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "blob truncated"));
+    }
+    let salt = &blob[salt_start..salt_end];
+    let nonce_bytes: [u8; 12] = blob[salt_end..nonce_end].try_into().unwrap();
+    let mut ciphertext = blob[nonce_end..].to_vec();
+
+    let key_bytes = derive_key(passphrase.as_bytes(), salt);
+    let unbound = aead::UnboundKey::new(&aead::AES_256_GCM, &key_bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "key construction failed"))?;
+    let lsk = aead::LessSafeKey::new(unbound);
+    let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+    let plaintext = lsk
+        .open_in_place(nonce, aead::Aad::empty(), &mut ciphertext)
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "decryption failed — wrong passphrase?",
+            )
+        })?;
+    String::from_utf8(plaintext.to_vec())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "decrypted bytes not valid UTF-8"))
+}
+
+/// Get the CA key passphrase. Checks `HUSH_CA_PASSPHRASE` env var first, then
+/// prompts via TTY. When `confirm` is true, prompts twice and checks they match.
+fn get_passphrase(prompt: &str, confirm: bool) -> io::Result<String> {
+    use std::io::IsTerminal;
+    if let Ok(p) = std::env::var("HUSH_CA_PASSPHRASE") {
+        return Ok(p);
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "CA key is encrypted but HUSH_CA_PASSPHRASE is not set and stdin is not a TTY",
+        ));
+    }
+    let pass = rpassword::prompt_password_stderr(&format!("{}: ", prompt))?;
+    if confirm {
+        let pass2 = rpassword::prompt_password_stderr("Confirm passphrase: ")?;
+        if pass != pass2 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Passphrases do not match",
+            ));
+        }
+    }
+    Ok(pass)
+}
+
+// ── mTLS acceptor for /peer ───────────────────────────────────────────────────
+
+/// Request extension injected by [`MtlsAcceptor`] into every incoming HTTP
+/// request. `true` when the client presented a TLS client certificate during
+/// the handshake; `false` for browser connections that send none.
+#[derive(Clone, Debug)]
+pub struct PeerCertPresent(pub bool);
+
+/// A [`tower::Service`] wrapper that inserts [`PeerCertPresent`] into every
+/// incoming [`http::Request`]'s extensions before forwarding to the inner
+/// service.
+#[derive(Clone)]
+pub struct WithPeerCert<S> {
+    pub inner: S,
+    pub cert_present: PeerCertPresent,
+}
+
+impl<S, B> tower::Service<http::Request<B>> for WithPeerCert<S>
+where
+    S: tower::Service<http::Request<B>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut req: http::Request<B>) -> Self::Future {
+        req.extensions_mut().insert(self.cert_present.clone());
+        self.inner.call(req)
+    }
+}
+
+/// Wraps [`axum_server::tls_rustls::RustlsAcceptor`] and, after the TLS
+/// handshake, injects a [`PeerCertPresent`] extension into every HTTP request
+/// on that connection. This lets the `/peer` handler enforce that daemon peers
+/// presented a valid TLS client certificate.
+#[derive(Clone)]
+pub struct MtlsAcceptor {
+    inner: axum_server::tls_rustls::RustlsAcceptor,
+}
+
+impl MtlsAcceptor {
+    pub fn new(config: axum_server::tls_rustls::RustlsConfig) -> Self {
+        Self {
+            inner: axum_server::tls_rustls::RustlsAcceptor::new(config),
+        }
+    }
+}
+
+impl<S> axum_server::accept::Accept<tokio::net::TcpStream, S> for MtlsAcceptor
+where
+    S: Send + 'static,
+{
+    type Stream = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+    type Service = WithPeerCert<S>;
+    type Future = std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = io::Result<(Self::Stream, Self::Service)>,
+                > + Send
+                + 'static,
+        >,
+    >;
+
+    fn accept(
+        &self,
+        stream: tokio::net::TcpStream,
+        service: S,
+    ) -> Self::Future {
+        // Call the inner RustlsAcceptor to perform the TLS handshake.
+        // The future is Send because RustlsAcceptorFuture captures only
+        // RustlsConfig (Arc<ArcSwap<ServerConfig>>) and a DefaultAcceptor future.
+        let fut = self.inner.accept(stream, service);
+        Box::pin(async move {
+            let (tls_stream, service) = fut.await?;
+            // peer_certificates() is non-empty only when the client sent a cert.
+            let has_cert = tls_stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .map(|certs| !certs.is_empty())
+                .unwrap_or(false);
+            Ok((
+                tls_stream,
+                WithPeerCert {
+                    inner: service,
+                    cert_present: PeerCertPresent(has_cert),
+                },
+            ))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// All tests that call load_or_generate_ca / generate_ca need a passphrase.
+    fn set_test_passphrase() {
+        // Safety: tests run sequentially in a single process; set_var is safe here.
+        unsafe { std::env::set_var("HUSH_CA_PASSPHRASE", "test-passphrase") };
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let pem = "-----BEGIN EC PRIVATE KEY-----\nfakekey\n-----END EC PRIVATE KEY-----";
+        let pass = "test-passphrase-roundtrip";
+        let encrypted = encrypt_key_pem(pem, pass).unwrap();
+        assert!(is_encrypted_key(&encrypted));
+        let decrypted = decrypt_key_pem(&encrypted, pass).unwrap();
+        assert_eq!(decrypted, pem);
+    }
+
+    #[test]
+    fn wrong_passphrase_fails() {
+        let pem = "-----BEGIN EC PRIVATE KEY-----\nfakekey\n-----END EC PRIVATE KEY-----";
+        let encrypted = encrypt_key_pem(pem, "correct").unwrap();
+        assert!(decrypt_key_pem(&encrypted, "wrong").is_err());
+    }
+
+    #[test]
+    fn is_encrypted_key_detection() {
+        assert!(is_encrypted_key(b"HKEK\x01rest"));
+        assert!(!is_encrypted_key(b"-----BEGIN"));
+        assert!(!is_encrypted_key(b""));
+    }
+
+    #[test]
+    fn migration_from_plaintext() {
+        set_test_passphrase();
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Manually write a plaintext PEM key to simulate a legacy install.
+        let tls_dir = tmp.path().join("tls");
+        std::fs::create_dir_all(&tls_dir).unwrap();
+        // First generate normally so we have a real CA cert to pair with.
+        let ca = load_or_generate_ca(tmp.path()).unwrap();
+        let key_path = tls_dir.join("ca.key");
+        // Overwrite with plaintext PEM to simulate pre-encryption state.
+        std::fs::write(&key_path, ca.key_pair.serialize_pem()).unwrap();
+        assert!(!is_encrypted_key(&std::fs::read(&key_path).unwrap()));
+        // Now load — should auto-migrate to encrypted.
+        let _ = load_or_generate_ca(tmp.path()).unwrap();
+        assert!(is_encrypted_key(&std::fs::read(&key_path).unwrap()));
+    }
+
     #[test]
     fn sign_produces_nonempty_signature() {
+        set_test_passphrase();
         let tmp = tempfile::TempDir::new().unwrap();
         let ca = load_or_generate_ca(tmp.path()).unwrap();
         let key_pem = ca.key_pair.serialize_pem();
@@ -604,6 +897,7 @@ mod tests {
 
     #[test]
     fn sign_and_verify_roundtrip() {
+        set_test_passphrase();
         let tmp = tempfile::TempDir::new().unwrap();
         let ca = load_or_generate_ca(tmp.path()).unwrap();
         let key_pem = ca.key_pair.serialize_pem();
@@ -622,6 +916,7 @@ mod tests {
 
     #[test]
     fn ca_generation_is_idempotent() {
+        set_test_passphrase();
         let tmp = tempfile::TempDir::new().unwrap();
         let ca1 = load_or_generate_ca(tmp.path()).unwrap();
         let ca2 = load_or_generate_ca(tmp.path()).unwrap();
@@ -631,6 +926,7 @@ mod tests {
 
     #[test]
     fn leaf_cert_contains_localhost_san() {
+        set_test_passphrase();
         let tmp = tempfile::TempDir::new().unwrap();
         let mat = load_or_generate(tmp.path(), "test-machine").unwrap();
         let cert_str = String::from_utf8_lossy(&mat.cert_pem);

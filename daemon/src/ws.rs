@@ -1340,6 +1340,86 @@ async fn handle_client_message(
                 auth_token: my_auth_token,
             });
         }
+
+        // ── Queued tasks ──────────────────────────────────────────────────────
+        ClientMessage::QueueTask { worktree_id, prompt } => {
+            let (is_idle, wt_exists) = {
+                let s = state.read().await;
+                match s.find_worktree(&worktree_id) {
+                    Some(w) => (w.status == crate::state::WorktreeStatus::Idle, true),
+                    None => (false, false),
+                }
+            };
+
+            if !wt_exists {
+                let machine_id = state.read().await.machine_id.clone();
+                let _ = tx.send(ServerMessage::Error {
+                    machine_id,
+                    message: format!("Worktree {worktree_id} not found"),
+                    worktree_id: Some(worktree_id),
+                });
+                return;
+            }
+
+            if is_idle {
+                // Dispatch immediately — spawn pty if needed then write prompt.
+                let wt_info = {
+                    let s = state.read().await;
+                    s.find_worktree(&worktree_id).map(|w| {
+                        (w.working_dir.clone(), w.permission_mode.clone(), w.session_id.clone())
+                    })
+                };
+                if let Some((working_dir, permission_mode, session_id)) = wt_info {
+                    if !pty_manager.exists(&worktree_id).await {
+                        let has_session = session_id.is_some();
+                        if let Err(e) = pty_manager
+                            .spawn(
+                                worktree_id.clone(),
+                                &working_dir,
+                                &permission_mode,
+                                None, // --continue, not --resume
+                                has_session,
+                                80,
+                                24,
+                            )
+                            .await
+                        {
+                            let machine_id = state.read().await.machine_id.clone();
+                            let _ = tx.send(ServerMessage::Error {
+                                machine_id,
+                                message: e,
+                                worktree_id: Some(worktree_id),
+                            });
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+                    let data = format!("{}\r", prompt);
+                    let _ = pty_manager.write(&worktree_id, data.as_bytes()).await;
+                }
+            } else {
+                // Running/needs_you/failed — append to queue.
+                let queued = {
+                    let mut s = state.write().await;
+                    if let Some(w) = s.find_worktree_mut(&worktree_id) {
+                        w.queued_tasks.push(prompt);
+                        w.queued_tasks.clone()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                {
+                    let s = state.read().await;
+                    s.save(&state_path);
+                    let machine_id = s.machine_id.clone();
+                    let _ = tx.send(ServerMessage::QueueUpdate {
+                        machine_id,
+                        worktree_id,
+                        queued_tasks: queued,
+                    });
+                }
+            }
+        }
     }
 }
 

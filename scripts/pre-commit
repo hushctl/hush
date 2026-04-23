@@ -65,11 +65,15 @@ if [[ $check_daemon -eq 1 ]]; then
 
   SMOKE_PORT=19111
   SMOKE_STATE="$tmpdir/smoke-state.json"
+  SMOKE_TLS="$tmpdir/tls"
   SMOKE_LOG="$tmpdir/smoke.log"
+  mkdir -p "$SMOKE_TLS"
 
+  HUSH_CA_PASSPHRASE="smoke-test" \
   "$REPO_ROOT/daemon/target/debug/hush" \
     --port "$SMOKE_PORT" \
     --state-file "$SMOKE_STATE" \
+    --tls-dir "$SMOKE_TLS" \
     > "$SMOKE_LOG" 2>&1 &
   SMOKE_PID=$!
 

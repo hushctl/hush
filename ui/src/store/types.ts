@@ -93,6 +93,9 @@ export interface AppState {
   lastLines: Record<string, string>;
   /** Client-side shell liveness tracking — set true on shell_data, false on shell_exit. */
   shellAlive: Record<string, boolean>;
+  /** Unix ms timestamp of the last status_change event per namespaced worktree id.
+   *  Used by the dot grid to sort worktrees by recency on the Y-axis. */
+  lastActivityTs: Record<string, number>;
 
   // ── UI state ─────────────────────────────────────────────────────────────
   layoutMode: "grid" | "canvas";

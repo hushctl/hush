@@ -1,73 +1,70 @@
-# React + TypeScript + Vite
+# Hush UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + TypeScript + Vite browser app for the Hush daemon. Displays a spatial dot grid of Claude Code sessions, embedded terminals, and project management.
 
-Currently, two official plugins are available:
+## Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+| What | Tech |
+|---|---|
+| Framework | React 19 + TypeScript |
+| Build | Vite |
+| Styling | Tailwind CSS + shadcn/ui components |
+| Terminal | xterm.js + xterm-addon-fit |
+| State | Zustand (persist middleware for layout prefs) |
+| Tests | Vitest (unit) + Playwright (E2E) |
+| AI intent | Optional on-device Qwen2.5 via WebGPU (opt-in) |
 
-## React Compiler
+## Development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev        # Vite dev server on :5173, proxies /ws to daemon on :9111
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+The daemon must be running (`hush` or `make build-daemon && ./target/debug/hush`).
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Build
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run build      # TypeScript check + Vite production build → dist/
 ```
+
+`make install` in the repo root builds both the daemon and UI, then installs everything to `~/.local/bin/` and `~/.hush/ui/`.
+
+## Tests
+
+```bash
+npm test           # Vitest unit tests (store, protocol, ptyBus)
+npx playwright test  # E2E tests (requires built daemon + UI)
+```
+
+## Key directories
+
+```
+src/
+  components/
+    Canvas/         — Free-form canvas with draggable PanelFrame windows
+    DotGrid/        — Spatial Voronoi dot grid (main view)
+    Layout/         — TopBar, CommandBar (intent parsing)
+    ProjectCard/    — Status card with action buttons
+    Terminal/       — xterm.js wrapper
+  lib/
+    intent.ts       — Command bar verb parser (regex + optional AI fallback)
+    protocol.ts     — TypeScript types mirroring daemon's protocol.rs
+    status.ts       — Status color/label mapping
+    ptyBus.ts       — In-process pub/sub for pty data
+  store/
+    index.ts        — Zustand store + all WebSocket message handlers
+    types.ts        — Store state shape
+e2e/
+  app.spec.ts       — Playwright end-to-end tests
+```
+
+## Design invariants
+
+- No border-radius anywhere
+- Font-weight 400 maximum
+- No shadows, no gradients
+- Terminal IS the chat — no custom chat renderer
+
+See the root `CLAUDE.md` for the full architecture and invariant list.

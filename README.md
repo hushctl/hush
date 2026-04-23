@@ -18,13 +18,31 @@ Run Claude Code on your laptop, your desktop, your cloud box — and control all
 
 ## Quick start
 
-### Prerequisites
+### Install via Homebrew (macOS)
 
-- [Rust](https://rustup.rs/) (for building)
-- [Node.js](https://nodejs.org/) 18+ (for building the UI)
+```sh
+brew install hushctl/hush/hush
+```
+
+Then jump straight to [Run](#run).
+
+### Build from source
+
+**Prerequisites:**
+
+- [Rust](https://rustup.rs/)
+- [Node.js](https://nodejs.org/) 18+
 - [Claude Code CLI](https://claude.ai/code) (`claude` must be on your PATH)
 
-### Build and install
+**Linux only:** install OpenSSL dev headers before building:
+
+```sh
+# Debian / Ubuntu
+sudo apt-get install pkg-config libssl-dev
+
+# Fedora / RHEL
+sudo dnf install pkg-config openssl-devel
+```
 
 ```sh
 git clone https://github.com/hushctl/hush
@@ -47,7 +65,14 @@ export PATH="$HOME/.local/bin:$PATH"
 hush
 ```
 
-On first run, Hush generates a TLS certificate authority and installs it into your OS trust store (macOS will prompt for your password once). After that, open **https://localhost:9111** in your browser.
+On first run, Hush generates a TLS certificate authority, encrypts the CA private key (you will be prompted to set a passphrase), and installs the CA into your OS trust store so browsers accept the daemon's certificate automatically.
+
+- **macOS:** will prompt for your password once (adds to login keychain)
+- **Linux:** run `hush trust` then follow the printed instructions to add the CA to your system store (e.g. `sudo update-ca-certificates` on Debian/Ubuntu, or `sudo trust anchor` on Fedora). After adding, restart your browser.
+
+> **Non-interactive / launchd / systemd:** set the `HUSH_CA_PASSPHRASE` environment variable so the daemon does not need to prompt on startup. See [Auto-start on macOS](#auto-start-on-macos-launchd).
+
+After the CA is trusted, open **https://localhost:9111** in your browser.
 
 Click **+ project** in the command bar, enter the path to a Git repo, then enter a branch name. A Claude Code session starts — click the dot on the grid to open a terminal pane.
 
@@ -138,8 +163,13 @@ Options:
       --join-token <TOKEN>       Join token from `hush invite` on an existing mesh member
                                  Used with --join to receive a signed cert from the CA machine
       --auto-upgrade             Automatically push this binary to older peers
+      --no-mdns                  Disable mDNS peer discovery on LAN
       --tls-dir <PATH>           Directory for TLS CA and leaf cert (default: ~/.hush/)
   -h, --help                     Print help
+
+Environment variables:
+  HUSH_CA_PASSPHRASE             Passphrase for the encrypted CA private key.
+                                 Required when stdin is not a TTY (launchd, systemd, CI).
 ```
 
 ---
@@ -182,6 +212,11 @@ Create `~/Library/LaunchAgents/com.hush.daemon.plist`:
 <dict>
   <key>Label</key>
   <string>com.hush.daemon</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HUSH_CA_PASSPHRASE</key>
+    <string>YOUR_PASSPHRASE</string>
+  </dict>
   <key>ProgramArguments</key>
   <array>
     <string>/Users/YOUR_USERNAME/.local/bin/hush</string>
@@ -241,6 +276,86 @@ Browser (any device)
 - Pty sessions survive browser disconnects. Reconnect anytime; scrollback replays automatically.
 - P2P upgrades stream the binary over the same TLS WebSocket used for pty data. Upgrade tarballs and worktree transfers are signed with the mesh CA key and verified on receipt.
 - Each daemon has a leaf TLS cert signed by the mesh CA. `hush invite` issues a join token; the joining machine POSTs to `/join`, receives a signed cert, and joins the mesh. The CA private key never leaves the CA-origin machine.
+
+---
+
+## Queued tasks
+
+When a worktree is idle, you can queue up prompts that run sequentially. Each prompt dispatches automatically when the previous one finishes.
+
+**From the UI:** click **+ task** in the worktree card when it is idle.
+
+**Via WebSocket:**
+
+```sh
+# Install wscat once
+npm install -g wscat
+
+wscat -c "wss://localhost:9111/ws" --no-check
+# Then send:
+{"type":"queue_task","worktree_id":"<wt_id>","prompt":"add unit tests for auth module"}
+```
+
+The card shows the queue depth as a badge. When Claude finishes the current task, the next queued prompt is injected automatically.
+
+---
+
+## mDNS peer discovery
+
+On a local network, daemons find each other automatically without `--join`. Hush advertises `_hush._tcp.local.` and merges discovered peers into the gossip mesh.
+
+This is enabled by default. To disable (e.g. if multicast is restricted on your network):
+
+```sh
+hush --no-mdns
+```
+
+mDNS handles LAN discovery only. Cross-subnet and remote peers still require `--join` + `--join-token`.
+
+---
+
+## Verifying new features after upgrade
+
+### CA key encryption
+
+After the first run following an upgrade from an older version, the plaintext `ca.key` is automatically migrated to an encrypted format:
+
+```sh
+file ~/.hush/tls/ca.key
+# Before migration: ASCII text (PEM)
+# After migration:  data (binary HKEK envelope)
+```
+
+For non-interactive environments (launchd, systemd), set `HUSH_CA_PASSPHRASE` in the environment before starting. The daemon will error with a clear message if it cannot prompt and the variable is not set.
+
+### mDNS discovery
+
+Start the daemon and grep for the advertisement log line:
+
+```sh
+hush 2>&1 | grep -i mdns
+# Expected: mDNS: advertising _hush._tcp.local. on port 9111 ...
+```
+
+Within ~5 seconds of a second daemon starting on the same LAN, both should appear in each other's peer lists without any `--join` flag.
+
+### Queued task auto-dispatch
+
+1. Open a worktree that is currently idle.
+2. Send a `queue_task` message (see [Queued tasks](#queued-tasks) above).
+3. The task badge appears on the card. When the worktree finishes its current work and transitions to idle, the queued prompt is injected automatically after a 500 ms settle delay.
+
+### Responsive card variants
+
+The ProjectCard renders in three sizes:
+
+| Variant | When used | Shows |
+|---|---|---|
+| `full` | Half-width or wider | All details, action buttons |
+| `quarter` | Quarter-width column | Name + dot + status pill + breadcrumb + queue badge |
+| `minimal` | Sidebar list | Name + dot only |
+
+To inspect in the browser: open React DevTools, find a `ProjectCard` component, and change the `variant` prop live.
 
 ---
 

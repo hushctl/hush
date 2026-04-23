@@ -19,6 +19,8 @@ export interface WorktreeInfo {
   machine_id: string;
   /** Whether a shell pty is alive for this worktree. */
   shell_alive?: boolean;
+  /** Prompts queued for sequential dispatch when the worktree becomes idle. */
+  queued_tasks?: string[];
 }
 
 export type WorktreeStatus =
@@ -70,7 +72,8 @@ export type ClientMessage =
   // Transfer
   | { type: "transfer_worktree"; worktree_id: string; dest_machine_id: string }
   | { type: "transfer_project"; project_id: string; dest_machine_id: string }
-  | { type: "remove_worktree"; worktree_id: string };
+  | { type: "remove_worktree"; worktree_id: string }
+  | { type: "queue_task"; worktree_id: string; prompt: string };
 
 // ─── Daemon → Client ──────────────────────────────────────────────────────────
 
@@ -204,4 +207,10 @@ export type ServerMessage =
       project_name: string;
       branch: string;
       dest_machine_id: string;
+    }
+  | {
+      type: "queue_update";
+      machine_id: string;
+      worktree_id: string;
+      queued_tasks: string[];
     };

@@ -202,6 +202,7 @@ export function PanelFrame({ panel }: Props) {
 
   return (
     <div
+      data-testid={panel.kind === "worktree_list" ? "project-tree" : "pane"}
       style={{
         position: "absolute",
         left: panel.x,
@@ -218,6 +219,7 @@ export function PanelFrame({ panel }: Props) {
     >
       {/* Header — drag handle */}
       <div
+        data-testid="pane-header"
         className="flex items-center justify-between px-2 shrink-0 h-7 border-b border-border select-none cursor-grab active:cursor-grabbing"
         style={
           color ? { borderLeftColor: color, borderLeftWidth: 2 } : undefined
@@ -273,6 +275,7 @@ export function PanelFrame({ panel }: Props) {
             </>
           )}
           <button
+            data-testid="close-pane"
             className="w-4 h-4 flex items-center justify-center text-muted-foreground hover:text-foreground"
             onClick={() => closePanel(panel.id)}
           >
