@@ -498,7 +498,7 @@ async fn main() {
     tokio::spawn(async move {
         shutdown_signal().await;
         info!("Shutting down...");
-        shutdown_handle.graceful_shutdown(None);
+        shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
     });
 
     // Use a custom acceptor that injects PeerCertPresent into every request's
@@ -689,7 +689,14 @@ async fn peer_ws_handler(
 }
 
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("Failed to install Ctrl+C handler");
+    let ctrl_c = tokio::signal::ctrl_c();
+    let mut sigterm = tokio::signal::unix::signal(
+        tokio::signal::unix::SignalKind::terminate(),
+    )
+    .expect("Failed to install SIGTERM handler");
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = sigterm.recv() => {},
+    }
 }
