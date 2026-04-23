@@ -16,15 +16,77 @@ Run Claude Code on your laptop, your desktop, your cloud box — and control all
 
 ---
 
-## Quick start
+## Table of contents
 
-### Install via Homebrew (macOS)
+- [Installation](#installation)
+  - [Homebrew (macOS)](#homebrew-macos)
+  - [Download pre-built binary](#download-pre-built-binary)
+  - [Build from source](#build-from-source)
+- [Getting started](#getting-started)
+- [Multiple machines](#multiple-machines)
+- [Features](#features)
+  - [Queued tasks](#queued-tasks)
+  - [mDNS peer discovery](#mdns-peer-discovery)
+  - [P2P upgrades](#p2p-upgrades)
+  - [Responsive project cards](#responsive-project-cards)
+- [CLI reference](#cli-reference)
+- [Auto-start on macOS (launchd)](#auto-start-on-macos-launchd)
+- [Testing two daemons on one machine](#testing-two-daemons-on-one-machine)
+- [How it works](#how-it-works)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+
+---
+
+## Installation
+
+### Homebrew (macOS)
 
 ```sh
 brew install hushctl/hush/hush
 ```
 
-Then jump straight to [Run](#run).
+Jump to [Getting started](#getting-started).
+
+---
+
+### Download pre-built binary
+
+Requires the [GitHub CLI](https://cli.github.com/) (`gh`).
+
+**Apple Silicon (M1/M2/M3):**
+
+```sh
+gh release download --repo hushctl/hush --pattern 'hush-darwin-aarch64.tar.gz'
+tar xzf hush-darwin-aarch64.tar.gz
+mkdir -p ~/.local/bin ~/.hush/ui
+mv hush-darwin-aarch64/hush hush-darwin-aarch64/hush-hook ~/.local/bin/
+cp -r hush-darwin-aarch64/ui/* ~/.hush/ui/
+rm -rf hush-darwin-aarch64 hush-darwin-aarch64.tar.gz
+```
+
+**Intel Mac:**
+
+```sh
+gh release download --repo hushctl/hush --pattern 'hush-darwin-x86_64.tar.gz'
+tar xzf hush-darwin-x86_64.tar.gz
+mkdir -p ~/.local/bin ~/.hush/ui
+mv hush-darwin-x86_64/hush hush-darwin-x86_64/hush-hook ~/.local/bin/
+cp -r hush-darwin-x86_64/ui/* ~/.hush/ui/
+rm -rf hush-darwin-x86_64 hush-darwin-x86_64.tar.gz
+```
+
+Add `~/.local/bin` to your PATH if it isn't already:
+
+```sh
+# Add to ~/.zshrc or ~/.bashrc
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Jump to [Getting started](#getting-started).
+
+---
 
 ### Build from source
 
@@ -59,18 +121,23 @@ Add `~/.local/bin` to your PATH if it isn't already:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-### Run
+---
+
+## Getting started
 
 ```sh
 hush
 ```
 
-On first run, Hush generates a TLS certificate authority, encrypts the CA private key (you will be prompted to set a passphrase), and installs the CA into your OS trust store so browsers accept the daemon's certificate automatically.
+On first run, Hush:
 
-- **macOS:** will prompt for your password once (adds to login keychain)
-- **Linux:** run `hush trust` then follow the printed instructions to add the CA to your system store (e.g. `sudo update-ca-certificates` on Debian/Ubuntu, or `sudo trust anchor` on Fedora). After adding, restart your browser.
+1. Generates a TLS certificate authority for the mesh.
+2. Encrypts the CA private key — you will be prompted to set a passphrase. Press Enter to use an empty passphrase (still encrypts the file; you won't be prompted again on restart if you set `HUSH_CA_PASSPHRASE=""`).
+3. Installs the CA into your OS trust store so browsers automatically accept the daemon's certificate.
+   - **macOS:** prompts for your login keychain password once.
+   - **Linux:** run `hush trust` then follow the printed instructions (e.g. `sudo update-ca-certificates` on Debian/Ubuntu, `sudo trust anchor` on Fedora). Restart your browser after.
 
-> **Non-interactive / launchd / systemd:** set the `HUSH_CA_PASSPHRASE` environment variable so the daemon does not need to prompt on startup. See [Auto-start on macOS](#auto-start-on-macos-launchd).
+> **Non-interactive / launchd / systemd:** set `HUSH_CA_PASSPHRASE` before starting so the daemon never prompts. See [Auto-start on macOS](#auto-start-on-macos-launchd).
 
 After the CA is trusted, open **https://localhost:9111** in your browser.
 
@@ -80,24 +147,20 @@ Click **+ project** in the command bar, enter the path to a Git repo, then enter
 
 ## Multiple machines
 
-Each machine runs its own `hush` daemon. The browser connects to all of them and merges everything into one grid. Daemons gossip peer lists, so adding one daemon URL is enough to discover the rest.
+Each machine runs its own `hush` daemon. The browser connects to all of them and merges everything into one grid.
 
-### Setup
-
-**1. Install Tailscale on each machine** (for encrypted networking)
+### 1. Install Tailscale on each machine
 
 ```sh
 # macOS
 brew install tailscale && sudo tailscaled & && tailscale up
 ```
 
-**2. Build and install Hush on each machine** (or use P2P upgrades after the first)
+### 2. Install Hush on each machine
 
-```sh
-make install
-```
+See [Installation](#installation) above. Homebrew and the pre-built binary are the fastest paths on remote machines.
 
-**3. Start the first machine**
+### 3. Start the first (CA) machine
 
 ```sh
 hush \
@@ -107,35 +170,97 @@ hush \
   --auto-upgrade
 ```
 
-**4. Join additional machines**
+`--bind 0.0.0.0` is required so remote peers can reach this daemon over Tailscale. The default (`127.0.0.1`) is intentionally localhost-only for single-machine setups.
 
-On the first machine, generate a short-lived join token:
+### 4. Enroll additional machines
+
+On the **first machine**, generate a short-lived join token:
 
 ```sh
 hush invite
-# prints: hush-join-XXXX-XXXX
-# Token expires in 10 minutes.
+# prints: hush-join-XXXX-XXXX  (expires in 10 minutes)
 ```
 
-On each additional machine, join with the token. `hush invite` prints the exact `--join` URL to use — copy it and fill in your own flags:
+On **each additional machine:**
 
 ```sh
 hush \
   --bind 0.0.0.0 \
   --advertise-url wss://$(tailscale ip -4):9111/ws \
   --machine-name studio \
-  --join wss://100.x.x.x:9111/peer \
+  --join wss://<first-machine-tailscale-ip>:9111/peer \
   --join-token hush-join-XXXX-XXXX \
   --auto-upgrade
 ```
 
-The joining machine POSTs to the CA machine's `/join` endpoint, receives a signed leaf cert, installs the mesh CA into its OS trust store (macOS will prompt for your password once), and starts. Within 30 seconds, every daemon knows about every other daemon.
+The joining machine receives a signed TLS leaf cert from the CA machine, installs the mesh CA into its OS trust store (macOS prompts once), and starts. Within 30 seconds, every daemon knows about every other daemon via gossip.
 
-> `--bind 0.0.0.0` is required for multi-machine use so that remote browsers and peer daemons can reach this daemon over Tailscale. The default (`127.0.0.1`) is intentionally localhost-only for single-machine setups.
+> **After the first join:** subsequent restarts of the enrolled machine do not need `--join` or `--join-token` — the cert is already on disk.
 
-**5. Open the browser**
+### 5. Open the browser
 
-Navigate to any daemon's URL (e.g. `https://100.x.x.x:9111`). Click **+ daemon** in the command bar to add a second daemon's URL — or just wait for gossip to auto-populate the rest.
+Navigate to **https://localhost:9111** (or any daemon's URL). Click **+ daemon** in the command bar and enter the remote daemon's URL (e.g. `https://<tailscale-ip>:9111`) — or wait for gossip to auto-populate it within 30 seconds.
+
+---
+
+## Features
+
+### Queued tasks
+
+When a worktree is idle, queue up prompts that run sequentially. Each prompt dispatches automatically when the previous one finishes.
+
+**From the UI:** click **+ task** in the worktree card when it is idle.
+
+**Via WebSocket:**
+
+```sh
+npm install -g wscat
+wscat -c "wss://localhost:9111/ws" --no-check
+# Then send:
+{"type":"queue_task","worktree_id":"<wt_id>","prompt":"add unit tests for auth module"}
+```
+
+The card shows queue depth as a badge. When Claude finishes, the next prompt is injected automatically after a 500 ms settle delay.
+
+---
+
+### mDNS peer discovery
+
+On a local network, daemons find each other automatically — no `--join` needed for discovery. Hush advertises `_hush._tcp.local.` and merges discovered peers into the gossip mesh.
+
+mDNS is enabled by default. To disable (e.g. if multicast is restricted on your network):
+
+```sh
+hush --no-mdns
+```
+
+> mDNS handles LAN discovery only. Cross-subnet and remote peers still require `--join` + `--join-token` for enrollment (mTLS cert issuance).
+
+---
+
+### P2P upgrades
+
+Upgrades flow through the gossip mesh — no GitHub access needed on receiving machines.
+
+1. Build and install the new binary on one machine:
+   ```sh
+   cd hush && make install
+   ```
+2. Restart that daemon with `--auto-upgrade`. Within one gossip round (~30 seconds), it streams the new binary to each older peer over TLS. Each peer replaces its binary and restarts automatically.
+
+`KeepAlive: true` in the launchd plist ensures launchd restarts the daemon after the self-upgrade exit.
+
+---
+
+### Responsive project cards
+
+Project cards render in three sizes based on available width:
+
+| Variant | When used | Shows |
+|---|---|---|
+| Full | Half-width or wider | All details, action buttons, queued task list |
+| Quarter | Quarter-width column | Name + dot + status pill + breadcrumb + queue badge |
+| Minimal | Sidebar list | Name + dot only |
 
 ---
 
@@ -157,46 +282,19 @@ Options:
       --machine-name <NAME>      Label shown in the UI (default: hostname)
       --advertise-url <URL>      WebSocket URL peers should dial to reach this daemon
                                  Required for peer discovery (e.g. wss://host:9111/ws)
-      --join <URL>               Seed peer URL on startup (repeatable)
-                                 Use the /peer endpoint (e.g. wss://host:9111/peer)
-                                 `hush invite` prints the exact command to run
-      --join-token <TOKEN>       Join token from `hush invite` on an existing mesh member
-                                 Used with --join to receive a signed cert from the CA machine
+      --join <URL>               Peer URL to enroll from (use the /peer endpoint)
+                                 e.g. wss://host:9111/peer
+      --join-token <TOKEN>       Join token from `hush invite` on the CA machine
       --auto-upgrade             Automatically push this binary to older peers
       --no-mdns                  Disable mDNS peer discovery on LAN
-      --tls-dir <PATH>           Directory for TLS CA and leaf cert (default: ~/.hush/)
+      --tls-dir <PATH>           Directory for TLS CA and leaf cert [default: ~/.hush/]
   -h, --help                     Print help
 
 Environment variables:
   HUSH_CA_PASSPHRASE             Passphrase for the encrypted CA private key.
                                  Required when stdin is not a TTY (launchd, systemd, CI).
+                                 Set to an empty string if you chose no passphrase on first run.
 ```
-
----
-
-## Testing two daemons on one machine
-
-```sh
-# Terminal 1
-hush --port 9111 --machine-name laptop \
-  --advertise-url wss://localhost:9111/ws
-
-# Generate a join token
-hush invite
-# → hush-join-XXXX-XXXX
-
-# Terminal 2
-hush --port 9112 --machine-name studio \
-  --state-file ~/.hush/state-studio.json \
-  --tls-dir ~/.hush/ \
-  --advertise-url wss://localhost:9112/ws \
-  --join wss://localhost:9111/peer \
-  --join-token hush-join-XXXX-XXXX
-```
-
-> `--tls-dir ~/.hush/` points both daemons at the same CA so they trust each other's leaf certs without a separate trust-install step.
-
-Add `wss://localhost:9111/ws` in the browser UI — `studio` appears automatically.
 
 ---
 
@@ -248,16 +346,33 @@ launchctl load ~/Library/LaunchAgents/com.hush.daemon.plist
 
 ---
 
-## Upgrades
+## Testing two daemons on one machine
 
-Upgrades flow through the gossip mesh — no GitHub access required on any machine except the one that builds the new binary.
+```sh
+# Terminal 1 — CA machine
+HUSH_CA_PASSPHRASE=test hush \
+  --port 9111 \
+  --machine-name laptop \
+  --advertise-url wss://localhost:9111/ws
 
-1. Build the new binary on one machine:
-   ```sh
-   cd hush && make install
-   ```
+# Generate join token
+hush invite
+# → hush-join-XXXX-XXXX
 
-2. Restart that daemon with `--auto-upgrade`. Within one gossip round (~30 seconds), it streams the new binary to each older peer over the existing TLS WebSocket. Each peer replaces its binary and restarts automatically.
+# Terminal 2 — joining machine
+HUSH_CA_PASSPHRASE=test hush \
+  --port 9112 \
+  --machine-name studio \
+  --state-file ~/.hush/state-studio.json \
+  --tls-dir ~/.hush/ \
+  --advertise-url wss://localhost:9112/ws \
+  --join wss://localhost:9111/peer \
+  --join-token hush-join-XXXX-XXXX
+```
+
+`--tls-dir ~/.hush/` points both daemons at the same CA so they trust each other's leaf certs without a separate trust-install step.
+
+Open **https://localhost:9111** — `studio` appears automatically within one gossip round.
 
 ---
 
@@ -269,107 +384,28 @@ Browser (any device)
                           └──► hush (machine B)  ◄── hush-hook shim
 ```
 
-- Each `hush` daemon owns its pty sessions, project registry, and state file.
+- Each `hush` daemon owns its pty sessions, project registry, and state file (`~/.hush/state.json`).
 - The browser namespaces IDs as `machineId:worktreeId` so projects from different machines never collide.
 - Daemons gossip peer lists every 30 seconds — adding one daemon seeds the whole mesh.
 - `hush-hook` is a shim invoked by Claude Code's hook system on lifecycle events (`SessionStart`, `Stop`, `Notification`, etc.). It writes structured JSON to a Unix socket so the daemon tracks status without parsing terminal output.
 - Pty sessions survive browser disconnects. Reconnect anytime; scrollback replays automatically.
-- P2P upgrades stream the binary over the same TLS WebSocket used for pty data. Upgrade tarballs and worktree transfers are signed with the mesh CA key and verified on receipt.
+- P2P upgrades stream the binary over the same TLS WebSocket used for pty data. Upgrade tarballs are signed with the mesh CA key and verified on receipt.
 - Each daemon has a leaf TLS cert signed by the mesh CA. `hush invite` issues a join token; the joining machine POSTs to `/join`, receives a signed cert, and joins the mesh. The CA private key never leaves the CA-origin machine.
-
----
-
-## Queued tasks
-
-When a worktree is idle, you can queue up prompts that run sequentially. Each prompt dispatches automatically when the previous one finishes.
-
-**From the UI:** click **+ task** in the worktree card when it is idle.
-
-**Via WebSocket:**
-
-```sh
-# Install wscat once
-npm install -g wscat
-
-wscat -c "wss://localhost:9111/ws" --no-check
-# Then send:
-{"type":"queue_task","worktree_id":"<wt_id>","prompt":"add unit tests for auth module"}
-```
-
-The card shows the queue depth as a badge. When Claude finishes the current task, the next queued prompt is injected automatically.
-
----
-
-## mDNS peer discovery
-
-On a local network, daemons find each other automatically without `--join`. Hush advertises `_hush._tcp.local.` and merges discovered peers into the gossip mesh.
-
-This is enabled by default. To disable (e.g. if multicast is restricted on your network):
-
-```sh
-hush --no-mdns
-```
-
-mDNS handles LAN discovery only. Cross-subnet and remote peers still require `--join` + `--join-token`.
-
----
-
-## Verifying new features after upgrade
-
-### CA key encryption
-
-After the first run following an upgrade from an older version, the plaintext `ca.key` is automatically migrated to an encrypted format:
-
-```sh
-file ~/.hush/tls/ca.key
-# Before migration: ASCII text (PEM)
-# After migration:  data (binary HKEK envelope)
-```
-
-For non-interactive environments (launchd, systemd), set `HUSH_CA_PASSPHRASE` in the environment before starting. The daemon will error with a clear message if it cannot prompt and the variable is not set.
-
-### mDNS discovery
-
-Start the daemon and grep for the advertisement log line:
-
-```sh
-hush 2>&1 | grep -i mdns
-# Expected: mDNS: advertising _hush._tcp.local. on port 9111 ...
-```
-
-Within ~5 seconds of a second daemon starting on the same LAN, both should appear in each other's peer lists without any `--join` flag.
-
-### Queued task auto-dispatch
-
-1. Open a worktree that is currently idle.
-2. Send a `queue_task` message (see [Queued tasks](#queued-tasks) above).
-3. The task badge appears on the card. When the worktree finishes its current work and transitions to idle, the queued prompt is injected automatically after a 500 ms settle delay.
-
-### Responsive card variants
-
-The ProjectCard renders in three sizes:
-
-| Variant | When used | Shows |
-|---|---|---|
-| `full` | Half-width or wider | All details, action buttons |
-| `quarter` | Quarter-width column | Name + dot + status pill + breadcrumb + queue badge |
-| `minimal` | Sidebar list | Name + dot only |
-
-To inspect in the browser: open React DevTools, find a `ProjectCard` component, and change the `variant` prop live.
+- mDNS (`_hush._tcp.local.`) handles LAN peer discovery automatically. Enrollment (cert signing) still requires `hush invite`.
 
 ---
 
 ## Development
 
 ```sh
-# Start the daemon (debug build)
+# Start the daemon (debug build, auto-reloads on save)
 cd daemon && cargo run
 
 # Start the UI dev server (hot reload)
 cd ui && npm run dev
 ```
 
-The UI dev server runs on `http://localhost:5173` and connects to the daemon's WebSocket at `wss://localhost:9111/ws`.
+The UI dev server runs on `http://localhost:5173` and proxies the daemon WebSocket at `wss://localhost:9111/ws`.
 
 **Optional: AI-powered command bar.** The command bar uses regex parsing by default. To enable natural language intent classification (downloads a ~300MB model on first load):
 
@@ -378,6 +414,18 @@ VITE_ENABLE_AI_INTENT=true npm run dev
 ```
 
 Run `make hooks` once after cloning to install the pre-commit build check.
+
+---
+
+## Troubleshooting
+
+See [docs/DEBUGGING.md](docs/DEBUGGING.md) for a full guide covering:
+
+- Startup failures (UTF-8 errors, passphrase prompts blocking the server, empty passphrase behaviour)
+- Multi-machine connectivity checklist
+- macOS firewall issues
+- SIGTERM / daemon lifecycle
+- Release and CI failures
 
 ---
 
